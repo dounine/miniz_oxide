@@ -121,11 +121,11 @@ fn main() {
     println!("compress size {}", data1.len());
     let mut total = 0;
     let mut index = 0;
-    let data = decompress_to_vec_callback(&data2, |decompress_size| {
-        total += decompress_size;
+    let data = decompress_to_vec_callback(&data2, &mut |compress_size| {
+        total += compress_size;
         println!(
             "decompres size {} {} total:{}",
-            index, decompress_size, total
+            index, compress_size, total
         );
         index += 1;
     })

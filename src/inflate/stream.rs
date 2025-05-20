@@ -230,7 +230,16 @@ pub fn inflate(
         // The caller is indicating that they want to finish the compression and this is the first call with the current stream
         // so we can simply write directly to the output buffer.
         // If there is not enough space for all of the decompressed data we will end up with a failure regardless.
-        let status = decompress(&mut state.decomp, next_in, next_out, 0, decomp_flags,|v|{});
+        let status = decompress(
+            &mut state.decomp,
+            next_in,
+            next_out,
+            0,
+            decomp_flags,
+            &mut 0,
+            &mut 0,
+            |_v| {},
+        );
         let in_bytes = status.1;
         let out_bytes = status.2;
         let status = status.0;
@@ -311,7 +320,9 @@ fn inflate_loop(
             &mut state.dict,
             state.dict_ofs,
             decomp_flags,
-            |v|{}
+            &mut 0,
+            &mut 0,
+            |_v| {},
         );
 
         let in_bytes = status.1;

@@ -5,7 +5,6 @@
 /// performance on 32-bit systems.
 pub struct OutputBuffer<'a> {
     slice: &'a mut [u8],
-    sub: usize,
     position: usize,
 }
 impl<'a> OutputBuffer<'a> {
@@ -13,19 +12,6 @@ impl<'a> OutputBuffer<'a> {
     pub fn from_slice_and_pos(slice: &'a mut [u8], position: usize) -> OutputBuffer<'a> {
         OutputBuffer {
             slice,
-            sub: 0,
-            position,
-        }
-    }
-    #[inline]
-    pub fn from_slice_and_sub_pos(
-        slice: &'a mut [u8],
-        sub: usize,
-        position: usize,
-    ) -> OutputBuffer<'a> {
-        OutputBuffer {
-            slice,
-            sub,
             position,
         }
     }
@@ -33,10 +19,6 @@ impl<'a> OutputBuffer<'a> {
     #[inline(always)]
     pub const fn position(&self) -> usize {
         self.position
-    }
-    #[inline(always)]
-    pub const fn sub(&self) -> usize {
-        self.sub
     }
 
     #[inline(always)]
@@ -49,7 +31,7 @@ impl<'a> OutputBuffer<'a> {
     /// Assumes that there is space.
     #[inline]
     pub fn write_byte(&mut self, byte: u8) {
-        self.slice[self.position - self.sub] = byte;
+        self.slice[self.position] = byte;
         self.position += 1;
     }
 
@@ -59,14 +41,14 @@ impl<'a> OutputBuffer<'a> {
     #[inline]
     pub fn write_slice(&mut self, data: &[u8]) {
         let len = data.len();
-        self.slice[(self.position - self.sub)..(self.position - self.sub) + len]
+        self.slice[(self.position)..(self.position) + len]
             .copy_from_slice(data);
         self.position += data.len();
     }
 
     #[inline]
     pub const fn bytes_left(&self) -> usize {
-        self.slice.len() - (self.position - self.sub)
+        self.slice.len() - (self.position)
     }
 
     #[inline(always)]

@@ -1361,6 +1361,8 @@ pub fn decompress(
     out: &mut [u8],
     out_pos: usize,
     flags: u32,
+    next_sub_size: &mut usize,
+    total_callback_size: &mut usize,
     mut callback_func: impl FnMut(usize),
 ) -> (TINFLStatus, usize, usize) {
     let out_buf_size_mask = if flags & TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF != 0 {
@@ -1380,8 +1382,7 @@ pub fn decompress(
         return (TINFLStatus::BadParam, 0, 0);
     }
 
-    let mut origin_input_size = in_buf.len();
-    let mut total_decompress_size = 0;
+    let mut pre_input_size = in_buf.len();
     let mut in_iter = InputWrapper::from_slice(in_buf);
 
     let mut state = r.state;
@@ -1696,9 +1697,14 @@ pub fn decompress(
                     out_buf.bytes_left() >= 259 &&
                     in_iter.bytes_left() >= 14
                 {
-                    let mut data = vec![0;1024*1024];
+                    // let mut data = vec![0;1024*1024];
                     // let mut out_buf2 = OutputBuffer::from_slice_and_pos(&mut data, out_pos);
                     let input_size = in_iter.as_slice().len();
+                    if input_size != pre_input_size {
+                       *total_callback_size += pre_input_size-input_size;
+                       callback_func(pre_input_size-input_size-*next_sub_size);
+                        *next_sub_size = 0;
+                    }
                     let (status, new_state) = decompress_fast(
                         r,
                         &mut in_iter,
@@ -1708,8 +1714,10 @@ pub fn decompress(
                         out_buf_size_mask,
                     );
                     let decompress_size = input_size - in_iter.as_slice().len();
-                    total_decompress_size += decompress_size;
-                    callback_func(decompress_size);
+                    *total_callback_size += decompress_size;
+                    callback_func(decompress_size-*next_sub_size);
+                    *next_sub_size = 0;
+                    pre_input_size = in_iter.as_slice().len();
 
                     state = new_state;
                     if status == TINFLStatus::Done {
@@ -1970,7 +1978,6 @@ pub fn decompress(
             _ => break TINFLStatus::Failed,
         };
     };
-    callback_func(origin_input_size - total_decompress_size);
     let in_undo = if status != TINFLStatus::NeedsMoreInput
         && status != TINFLStatus::FailedCannotMakeProgress
     {

@@ -2,7 +2,6 @@
 
 #[cfg(feature = "with-alloc")]
 use crate::alloc::{boxed::Box, vec, vec::Vec};
-use crate::deflate::core::CallbackFunc;
 #[cfg(all(feature = "std", feature = "with-alloc"))]
 use std::error::Error;
 
@@ -151,7 +150,7 @@ pub fn decompress_to_vec(input: &[u8]) -> Result<Vec<u8>, DecompressError> {
 #[cfg(feature = "with-alloc")]
 pub fn decompress_to_vec_callback(
     input: &[u8],
-    callback_func: impl FnMut(usize),
+    callback_func: &mut impl FnMut(usize),
 ) -> Result<Vec<u8>, DecompressError> {
     decompress_to_vec_inner_callback(input, 0, usize::MAX, callback_func)
 }
@@ -226,8 +225,16 @@ fn decompress_to_vec_inner(
     loop {
         // Wrap the whole output slice so we know we have enough of the
         // decompressed data for matches.
-        let (status, in_consumed, out_consumed) =
-            decompress(&mut decomp, input, &mut ret, out_pos, flags, |v| {});
+        let (status, in_consumed, out_consumed) = decompress(
+            &mut decomp,
+            input,
+            &mut ret,
+            out_pos,
+            flags,
+            &mut 0,
+            &mut 0,
+            |_v| {},
+        );
         out_pos += out_consumed;
 
         match status {
@@ -270,22 +277,32 @@ fn decompress_to_vec_inner_callback(
 
     let mut decomp = Box::<DecompressorOxide>::default();
 
+    let size = input.len();
     let mut out_pos = 0;
+    let mut next_sub_size = 0;
+    let mut sum_total_callback_size = 0;
     loop {
         // Wrap the whole output slice so we know we have enough of the
         // decompressed data for matches.
+        let mut total_callback_size = 0;
         let (status, in_consumed, out_consumed) = decompress(
             &mut decomp,
             input,
             &mut ret,
             out_pos,
             flags,
+            &mut next_sub_size,
+            &mut total_callback_size,
             &mut callback_func,
         );
+        sum_total_callback_size += total_callback_size;
         out_pos += out_consumed;
 
         match status {
             TINFLStatus::Done => {
+                if sum_total_callback_size < size {
+                    callback_func(size - sum_total_callback_size)
+                }
                 ret.truncate(out_pos);
                 return Ok(ret);
             }
@@ -305,6 +322,10 @@ fn decompress_to_vec_inner_callback(
                 // calculate the new length, capped at `max_output_size`
                 let new_len = ret.len().saturating_mul(2).min(max_output_size);
                 ret.resize(new_len, 0);
+                if total_callback_size > in_consumed {
+                    next_sub_size = total_callback_size - in_consumed;
+                    sum_total_callback_size -= next_sub_size;
+                }
             }
 
             _ => return decompress_error(status, ret),
@@ -352,7 +373,7 @@ pub fn decompress_slice_iter_to_slice<'out, 'inp>(
             f
         };
         let (status, _input_read, bytes_written) =
-            decompress(r, in_buf, out, out_pos, flags, |v| {});
+            decompress(r, in_buf, out, out_pos, flags, &mut 0, &mut 0, |_v| {});
         out_pos += bytes_written;
         match status {
             TINFLStatus::NeedsMoreInput => continue,
