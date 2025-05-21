@@ -7,7 +7,7 @@ use crate::alloc::boxed::Box;
 use crate::inflate::core::{decompress, inflate_flags, DecompressorOxide, TINFL_LZ_DICT_SIZE};
 use crate::inflate::{DecompressError, TINFLStatus};
 use crate::{DataFormat, MZError, MZFlush, MZResult, MZStatus, StreamResult};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
 
 /// Tag that determines reset policy of [InflateState](struct.InflateState.html)
 pub trait ResetPolicy {
@@ -159,7 +159,7 @@ impl InflateState {
         policy.reset(self)
     }
 }
-pub fn decompress_stream_callback<W: Write + Read + Seek>(
+pub fn decompress_stream_callback<W: Write + Seek>(
     input: &[u8],
     writer: &mut W,
     callback_func: &mut impl FnMut(usize),
@@ -206,7 +206,7 @@ pub fn decompress_stream_callback<W: Write + Read + Seek>(
 /// Returns [`MZError::Stream`] when called with [`MZFlush::Full`] (meaningless on
 /// decompression), or when called without [`MZFlush::Finish`] after an earlier call with
 /// [`MZFlush::Finish`] has been made.
-pub fn inflate<W: Write + Read + Seek>(
+pub fn inflate<W: Write + Seek>(
     state: &mut InflateState,
     input: &[u8],
     writer: &mut W,
@@ -327,7 +327,7 @@ pub fn inflate<W: Write + Read + Seek>(
     }
 }
 
-fn inflate_loop<W: Write + Read + Seek>(
+fn inflate_loop<W: Write + Seek>(
     state: &mut InflateState,
     next_in: &mut &[u8],
     next_out: &mut W,

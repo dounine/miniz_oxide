@@ -6,11 +6,11 @@
 
 use crate::deflate::core::{compress, CompressorOxide, TDEFLFlush, TDEFLStatus};
 use crate::deflate::CompressionLevel;
-use crate::inflate::{DecompressError};
+use crate::inflate::DecompressError;
 use crate::{DataFormat, MZError, MZFlush, MZStatus, StreamResult};
-use std::io::{Read, Seek, Write};
+use std::io::{Seek, Write};
 
-pub fn compress_stream_callback<W: Write + Read + Seek>(
+pub fn compress_stream_callback<W: Write + Seek>(
     mut input: &[u8],
     writer: &mut W,
     compression_level: &CompressionLevel,
