@@ -5,8 +5,48 @@
 //! There is no DeflateState as the needed state is contained in the compressor struct itself.
 
 use crate::deflate::core::{compress, CompressorOxide, TDEFLFlush, TDEFLStatus};
-use crate::{MZError, MZFlush, MZStatus, StreamResult};
+use crate::deflate::CompressionLevel;
+use crate::inflate::{DecompressError};
+use crate::{DataFormat, MZError, MZFlush, MZStatus, StreamResult};
+use std::io::{Read, Seek, Write};
 
+pub fn compress_stream_callback<W: Write + Read + Seek>(
+    mut input: &[u8],
+    writer: &mut W,
+    compression_level: &CompressionLevel,
+    callback_func: &mut impl FnMut(usize),
+) -> Result<(), DecompressError> {
+    let mut compressor = Box::<CompressorOxide>::default();
+    compressor.set_format_and_level(DataFormat::Raw, *compression_level as u8);
+    let mut flush: MZFlush = MZFlush::None;
+    loop {
+        let mut data = vec![0; 32 * 1024];
+        let res = deflate(&mut compressor, &input, &mut data, flush);
+        match res.status {
+            Ok(status) if status == MZStatus::Ok => {
+                input = &input[res.bytes_consumed..];
+                let data = &data[..res.bytes_written];
+                writer.write(data).unwrap();
+                callback_func(res.bytes_consumed);
+                if input.is_empty() {
+                    flush = MZFlush::Finish;
+                }
+            }
+            Ok(status) if status == MZStatus::StreamEnd => {
+                input = &input[res.bytes_consumed..];
+                let data = &data[..res.bytes_written];
+                writer.write(data).unwrap();
+                callback_func(res.bytes_consumed);
+                if input.is_empty() {
+                    return Ok(());
+                }
+            }
+            _ => {
+                panic!("status error")
+            }
+        }
+    }
+}
 /// Try to compress from input to output with the given [`CompressorOxide`].
 ///
 /// # Errors

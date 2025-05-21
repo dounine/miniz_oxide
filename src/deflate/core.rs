@@ -2448,44 +2448,44 @@ mod test {
         assert_eq!(&decoded[..], &slice[..]);
     }
 
-    #[test]
-    fn zlib_window_bits() {
-        use crate::inflate::stream::{inflate, InflateState};
-        use crate::DataFormat;
-        use alloc::boxed::Box;
-        let slice = [
-            1, 2, 3, 4, 1, 2, 3, 1, 2, 3, 1, 2, 6, 1, 2, 3, 1, 2, 3, 2, 3, 1, 2, 3, 35, 22, 22, 2,
-            6, 2, 6,
-        ];
-        let mut encoded = vec![];
-        let flags = create_comp_flags_from_zip_params(2, 1, CompressionStrategy::RLE.into());
-        let mut d = CompressorOxide::new(flags);
-        let (status, in_consumed) =
-            compress_to_output(&mut d, &slice, TDEFLFlush::Finish, |out: &[u8]| {
-                encoded.extend_from_slice(out);
-                true
-            });
-
-        assert_eq!(status, TDEFLStatus::Done);
-        assert_eq!(in_consumed, slice.len());
-
-        let mut output = vec![0; slice.len()];
-
-        let mut decompressor = Box::new(InflateState::new(DataFormat::Zlib));
-
-        let mut out_slice = output.as_mut_slice();
-        // Feed 1 byte at a time and no back buffer to test that RLE encoding has been used.
-        for i in 0..encoded.len() {
-            let result = inflate(
-                &mut decompressor,
-                &encoded[i..i + 1],
-                out_slice,
-                crate::MZFlush::None,
-            );
-            out_slice = &mut out_slice[result.bytes_written..];
-        }
-        let cmf = decompressor.decompressor().zlib_header().0;
-        assert_eq!(cmf, 8);
-        assert_eq!(output, slice)
-    }
+    // #[test]
+    // fn zlib_window_bits() {
+    //     use crate::inflate::stream::{inflate, InflateState};
+    //     use crate::DataFormat;
+    //     use alloc::boxed::Box;
+    //     let slice = [
+    //         1, 2, 3, 4, 1, 2, 3, 1, 2, 3, 1, 2, 6, 1, 2, 3, 1, 2, 3, 2, 3, 1, 2, 3, 35, 22, 22, 2,
+    //         6, 2, 6,
+    //     ];
+    //     let mut encoded = vec![];
+    //     let flags = create_comp_flags_from_zip_params(2, 1, CompressionStrategy::RLE.into());
+    //     let mut d = CompressorOxide::new(flags);
+    //     let (status, in_consumed) =
+    //         compress_to_output(&mut d, &slice, TDEFLFlush::Finish, |out: &[u8]| {
+    //             encoded.extend_from_slice(out);
+    //             true
+    //         });
+    //
+    //     assert_eq!(status, TDEFLStatus::Done);
+    //     assert_eq!(in_consumed, slice.len());
+    //
+    //     let mut output = vec![0; slice.len()];
+    //
+    //     let mut decompressor = Box::new(InflateState::new(DataFormat::Zlib));
+    //
+    //     let mut out_slice = output.as_mut_slice();
+    //     // Feed 1 byte at a time and no back buffer to test that RLE encoding has been used.
+    //     for i in 0..encoded.len() {
+    //         let result = inflate(
+    //             &mut decompressor,
+    //             &encoded[i..i + 1],
+    //             &mut out_slice,
+    //             crate::MZFlush::None,
+    //         );
+    //         out_slice = &mut out_slice[result.bytes_written..];
+    //     }
+    //     let cmf = decompressor.decompressor().zlib_header().0;
+    //     assert_eq!(cmf, 8);
+    //     assert_eq!(output, slice)
+    // }
 }

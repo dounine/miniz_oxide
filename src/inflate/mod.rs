@@ -1,15 +1,10 @@
 //! This module contains functionality for decompression.
 
-#[cfg(feature = "with-alloc")]
-use crate::alloc::{boxed::Box, vec, vec::Vec};
-#[cfg(all(feature = "std", feature = "with-alloc"))]
 use std::error::Error;
 
 pub mod core;
 mod output_buffer;
-#[cfg(not(feature = "rustc-dep-of-std"))]
 pub mod stream;
-#[cfg(not(feature = "rustc-dep-of-std"))]
 use self::core::*;
 
 const TINFL_STATUS_FAILED_CANNOT_MAKE_PROGRESS: i32 = -4;
@@ -27,6 +22,7 @@ const TINFL_STATUS_BLOCK_BOUNDARY: i32 = 3;
 #[cfg_attr(not(feature = "rustc-dep-of-std"), derive(Hash, Debug))]
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum TINFLStatus {
+    IoError = 10,
     /// More input data was expected, but the caller indicated that there was no more data, so the
     /// input stream is likely truncated.
     ///
@@ -97,7 +93,6 @@ impl TINFLStatus {
 }
 
 /// Struct return when decompress_to_vec functions fail.
-#[cfg(feature = "with-alloc")]
 #[derive(Debug)]
 pub struct DecompressError {
     /// Decompressor status on failure. See [TINFLStatus] for details.
@@ -106,7 +101,6 @@ pub struct DecompressError {
     pub output: Vec<u8>,
 }
 
-#[cfg(feature = "with-alloc")]
 impl alloc::fmt::Display for DecompressError {
     #[cold]
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
@@ -120,15 +114,14 @@ impl alloc::fmt::Display for DecompressError {
             TINFLStatus::HasMoreOutput => "Output size exceeded the specified limit",
             #[cfg(feature = "block-boundary")]
             TINFLStatus::BlockBoundary => "Reached end of a deflate block",
+            TINFLStatus::IoError => "Io read or write error",
         })
     }
 }
 
 /// Implement Error trait only if std feature is requested as it requires std.
-#[cfg(all(feature = "std", feature = "with-alloc"))]
 impl Error for DecompressError {}
 
-#[cfg(feature = "with-alloc")]
 fn decompress_error(status: TINFLStatus, output: Vec<u8>) -> Result<Vec<u8>, DecompressError> {
     Err(DecompressError { status, output })
 }
@@ -217,8 +210,8 @@ fn decompress_to_vec_inner(
     max_output_size: usize,
 ) -> Result<Vec<u8>, DecompressError> {
     let flags = flags | inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
-    let mut ret: Vec<u8> = vec![0; input.len().saturating_mul(2).min(max_output_size)];
-
+    let mut ret: Vec<u8> = vec![0; 32768];
+    // let mut ret = Cursor::new(vec![0;32768]);
     let mut decomp = Box::<DecompressorOxide>::default();
 
     let mut out_pos = 0;
@@ -274,7 +267,7 @@ fn decompress_to_vec_inner_callback(
 ) -> Result<Vec<u8>, DecompressError> {
     let flags = flags | inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
     let mut ret: Vec<u8> = vec![0; input.len().saturating_mul(2).min(max_output_size)];
-
+    // let mut ret = Cursor::new(vec![]);
     let mut decomp = Box::<DecompressorOxide>::default();
 
     let size = input.len();
@@ -345,51 +338,51 @@ fn decompress_to_vec_inner_callback(
 /// * `zlib_header` if the first slice out of the iterator is expected to have a
 ///   Zlib header. Otherwise the slices are assumed to be the deflate data only.
 /// * `ignore_adler32` if the adler32 checksum should be calculated or not.
-#[cfg(not(feature = "rustc-dep-of-std"))]
-pub fn decompress_slice_iter_to_slice<'out, 'inp>(
-    out: &'out mut [u8],
-    it: impl Iterator<Item = &'inp [u8]>,
-    zlib_header: bool,
-    ignore_adler32: bool,
-) -> Result<usize, TINFLStatus> {
-    use self::core::inflate_flags::*;
-
-    let mut it = it.peekable();
-    let r = &mut DecompressorOxide::new();
-    let mut out_pos = 0;
-    while let Some(in_buf) = it.next() {
-        let has_more = it.peek().is_some();
-        let flags = {
-            let mut f = TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
-            if zlib_header {
-                f |= TINFL_FLAG_PARSE_ZLIB_HEADER;
-            }
-            if ignore_adler32 {
-                f |= TINFL_FLAG_IGNORE_ADLER32;
-            }
-            if has_more {
-                f |= TINFL_FLAG_HAS_MORE_INPUT;
-            }
-            f
-        };
-        let (status, _input_read, bytes_written) =
-            decompress(r, in_buf, out, out_pos, flags, &mut 0, &mut 0, |_v| {});
-        out_pos += bytes_written;
-        match status {
-            TINFLStatus::NeedsMoreInput => continue,
-            TINFLStatus::Done => return Ok(out_pos),
-            e => return Err(e),
-        }
-    }
-    // If we ran out of source slices without getting a `Done` from the
-    // decompression we can call it a failure.
-    Err(TINFLStatus::FailedCannotMakeProgress)
-}
+// #[cfg(not(feature = "rustc-dep-of-std"))]
+// pub fn decompress_slice_iter_to_slice<'out, 'inp>(
+//     out: &'out mut [u8],
+//     it: impl Iterator<Item = &'inp [u8]>,
+//     zlib_header: bool,
+//     ignore_adler32: bool,
+// ) -> Result<usize, TINFLStatus> {
+//     use self::core::inflate_flags::*;
+//
+//     let mut it = it.peekable();
+//     let r = &mut DecompressorOxide::new();
+//     let mut out_pos = 0;
+//     while let Some(in_buf) = it.next() {
+//         let has_more = it.peek().is_some();
+//         let flags = {
+//             let mut f = TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
+//             if zlib_header {
+//                 f |= TINFL_FLAG_PARSE_ZLIB_HEADER;
+//             }
+//             if ignore_adler32 {
+//                 f |= TINFL_FLAG_IGNORE_ADLER32;
+//             }
+//             if has_more {
+//                 f |= TINFL_FLAG_HAS_MORE_INPUT;
+//             }
+//             f
+//         };
+//         let (status, _input_read, bytes_written) =
+//             decompress(r, in_buf, out, out_pos, flags, &mut 0, &mut 0, |_v| {});
+//         out_pos += bytes_written;
+//         match status {
+//             TINFLStatus::NeedsMoreInput => continue,
+//             TINFLStatus::Done => return Ok(out_pos),
+//             e => return Err(e),
+//         }
+//     }
+//     // If we ran out of source slices without getting a `Done` from the
+//     // decompression we can call it a failure.
+//     Err(TINFLStatus::FailedCannotMakeProgress)
+// }
 
 #[cfg(all(test, feature = "with-alloc"))]
 mod test {
     use super::{
-        decompress_slice_iter_to_slice, decompress_to_vec_zlib, decompress_to_vec_zlib_with_limit,
+        decompress_to_vec_zlib, decompress_to_vec_zlib_with_limit,
         DecompressError, TINFLStatus,
     };
     const ENCODED: [u8; 20] = [
@@ -420,30 +413,30 @@ mod test {
         }
     }
 
-    #[test]
-    fn test_decompress_slice_iter_to_slice() {
-        // one slice
-        let mut out = [0_u8; 12_usize];
-        let r =
-            decompress_slice_iter_to_slice(&mut out, Some(&ENCODED[..]).into_iter(), true, false);
-        assert_eq!(r, Ok(12));
-        assert_eq!(&out[..12], &b"Hello, zlib!"[..]);
-
-        // some chunks at a time
-        for chunk_size in 1..13 {
-            // Note: because of https://github.com/Frommi/miniz_oxide/issues/110 our
-            // out buffer needs to have +1 byte available when the chunk size cuts
-            // the adler32 data off from the last actual data.
-            let mut out = [0_u8; 12_usize + 1];
-            let r =
-                decompress_slice_iter_to_slice(&mut out, ENCODED.chunks(chunk_size), true, false);
-            assert_eq!(r, Ok(12));
-            assert_eq!(&out[..12], &b"Hello, zlib!"[..]);
-        }
-
-        // output buffer too small
-        let mut out = [0_u8; 3_usize];
-        let r = decompress_slice_iter_to_slice(&mut out, ENCODED.chunks(7), true, false);
-        assert!(r.is_err());
-    }
+    // #[test]
+    // fn test_decompress_slice_iter_to_slice() {
+    //     // one slice
+    //     let mut out = [0_u8; 12_usize];
+    //     let r =
+    //         decompress_slice_iter_to_slice(&mut out, Some(&ENCODED[..]).into_iter(), true, false);
+    //     assert_eq!(r, Ok(12));
+    //     assert_eq!(&out[..12], &b"Hello, zlib!"[..]);
+    //
+    //     // some chunks at a time
+    //     for chunk_size in 1..13 {
+    //         // Note: because of https://github.com/Frommi/miniz_oxide/issues/110 our
+    //         // out buffer needs to have +1 byte available when the chunk size cuts
+    //         // the adler32 data off from the last actual data.
+    //         let mut out = [0_u8; 12_usize + 1];
+    //         let r =
+    //             decompress_slice_iter_to_slice(&mut out, ENCODED.chunks(chunk_size), true, false);
+    //         assert_eq!(r, Ok(12));
+    //         assert_eq!(&out[..12], &b"Hello, zlib!"[..]);
+    //     }
+    //
+    //     // output buffer too small
+    //     let mut out = [0_u8; 3_usize];
+    //     let r = decompress_slice_iter_to_slice(&mut out, ENCODED.chunks(7), true, false);
+    //     assert!(r.is_err());
+    // }
 }

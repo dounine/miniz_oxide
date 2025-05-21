@@ -1,10 +1,20 @@
-use miniz_oxide::deflate::core::compress_to_output;
-use miniz_oxide::deflate::{compress_to_vec, compress_to_vec_callback};
-use miniz_oxide::inflate::{
-    decompress_to_vec, decompress_to_vec_callback, decompress_to_vec_with_limit,
-};
+use miniz_oxide::{MZStatus, deflate};
+// use miniz_oxide::deflate::core::{CompressorOxide, compress_to_output};
+// use miniz_oxide::deflate::stream::{compress_stream_callback, deflate};
+// use miniz_oxide::deflate::{compress_to_vec, compress_to_vec_callback};
+// use miniz_oxide::inflate::stream::{InflateState, decompress_stream_callback, inflate};
+// use miniz_oxide::inflate::{
+//     decompress_to_vec, decompress_to_vec_callback, decompress_to_vec_with_limit,
+// };
+use miniz_oxide::deflate::{compress_to_vec, CompressionLevel};
+use miniz_oxide::deflate::core::CompressorOxide;
+use miniz_oxide::deflate::stream::compress_stream_callback;
+use miniz_oxide::inflate::decompress_to_vec_callback;
+use miniz_oxide::{DataFormat, MZFlush};
 use std::fs;
+use std::io::Cursor;
 use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeFull};
+use miniz_oxide::inflate::stream::decompress_stream_callback;
 
 pub struct OffsetVec<T> {
     inner: Vec<T>,
@@ -109,28 +119,62 @@ fn main() {
     // }
     let origin = fs::read("./data/wt_bg.mp3").unwrap();
     println!("origin size {}", origin.len());
-    let data1 = compress_to_vec(&origin, 6);
-    let data2 = compress_to_vec_callback(&origin, 6, 1024 * 1024, |compress_size| {
-        // println!("compress size {}", compress_size)
-    });
-    assert_eq!(data1, data2);
+    // let data1 = compress_to_vec(&origin, 6);
+    let mut output = Cursor::new(vec![]);
+    compress_stream_callback(
+        &origin,
+        &mut output,
+        &CompressionLevel::DefaultLevel,
+        &mut |v| {},
+    )
+    .unwrap();
+    // assert_eq!(data1, output.into_inner());
+    // let origin_de = decompress_to_vec_callback(&data1, &mut |v| {}).unwrap();
+    // assert_eq!(origin, origin_de);
+    let mut out = Cursor::new(vec![]);
+    decompress_stream_callback(&output.into_inner(), &mut out, &mut |v| {}).unwrap();
+    assert_eq!(origin, out.into_inner());
+    //     match res.status {
+    //         Ok(MZStatus::Ok) | Ok(MZStatus::StreamEnd) => {
+    //             // data2 = &data2[res.bytes_consumed..];
+    //             output.extend_from_slice(&out[..res.bytes_written]);
+    //         }
+    //         Err(e) => {
+    //             println!("解压失败 {:?}", e)
+    //         }
+    //         _ => {
+    //             println!("解压失败")
+    //         }
+    //     }
+    //     if res.status == Ok(MZStatus::StreamEnd) || data2.is_empty() || res.bytes_written == 0 {
+    //         break;
+    //     }
+    // }
+    // println!("{:?}", out);
+    // println!("{:?}", res1);
+    // assert_eq!(status, MZStatus::Ok);
+
+    // Clone the state and discard the original
+    // let mut resume = state.clone();
     // println!("compress size {}",data.len());
     // fs::write("./data/hi2.zip", data).unwrap();
     // println!("compress size {}",data.len());
     // let data = decompress_to_vec(&data2).unwrap();
-    println!("compress size {}", data1.len());
-    let mut total = 0;
-    let mut index = 0;
-    let data = decompress_to_vec_callback(&data2, &mut |compress_size| {
-        total += compress_size;
-        println!(
-            "decompres size {} {} total:{}",
-            index, compress_size, total
-        );
-        index += 1;
-    })
-    .unwrap();
-    assert_eq!(origin, data);
-    println!("size {}", total)
+    // println!("compress size {}", data1.len());
+    // let mut total = 0;
+    // let mut index = 0;
+    // let data = decompress_to_vec_callback(&data2, &mut |compress_size| {
+    //     total += compress_size;
+    //     // println!(
+    //     //     "decompres size {} {} total:{}",
+    //     //     index, compress_size, total
+    //     // );
+    //     index += 1;
+    // })
+    // .unwrap();
+    // // assert_eq!(origin, data);
+    // println!("aa {:?}", &data[..50])
+
+    // let met decoder = InflateI
     // println!("Hello, world!");
 }
