@@ -6,7 +6,7 @@
 
 use crate::deflate::core::{compress, CompressorOxide, TDEFLFlush, TDEFLStatus};
 use crate::deflate::CompressionLevel;
-use crate::inflate::DecompressError;
+use crate::inflate::{DecompressError, TINFLStatus};
 use crate::{DataFormat, MZError, MZFlush, MZStatus, StreamResult};
 use std::io::{Seek, Write};
 
@@ -23,26 +23,27 @@ pub fn compress_stream_callback<W: Write + Seek>(
         let mut data = vec![0; 32 * 1024];
         let res = deflate(&mut compressor, &input, &mut data, flush);
         match res.status {
-            Ok(status) if status == MZStatus::Ok => {
+            Ok(status) => {
                 input = &input[res.bytes_consumed..];
                 let data = &data[..res.bytes_written];
-                writer.write(data).unwrap();
+                writer.write_all(data).map_err(|e| DecompressError {
+                    msg: format!("{:?}", e),
+                    status: TINFLStatus::IoError,
+                    output: vec![],
+                })?;
                 callback_func(res.bytes_consumed);
-                if input.is_empty() {
+                if input.is_empty() && status == MZStatus::StreamEnd {
+                    return Ok(());
+                } else {
                     flush = MZFlush::Finish;
                 }
             }
-            Ok(status) if status == MZStatus::StreamEnd => {
-                input = &input[res.bytes_consumed..];
-                let data = &data[..res.bytes_written];
-                writer.write(data).unwrap();
-                callback_func(res.bytes_consumed);
-                if input.is_empty() {
-                    return Ok(());
-                }
-            }
-            _ => {
-                panic!("status error")
+            Err(e) => {
+                return Err(DecompressError {
+                    msg: format!("{:?}", e),
+                    status: TINFLStatus::IoError,
+                    output: vec![],
+                })
             }
         }
     }

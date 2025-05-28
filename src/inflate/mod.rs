@@ -95,6 +95,7 @@ impl TINFLStatus {
 /// Struct return when decompress_to_vec functions fail.
 #[derive(Debug)]
 pub struct DecompressError {
+    pub msg: String,
     /// Decompressor status on failure. See [TINFLStatus] for details.
     pub status: TINFLStatus,
     /// The currently decompressed data if any.
@@ -123,7 +124,11 @@ impl alloc::fmt::Display for DecompressError {
 impl Error for DecompressError {}
 
 fn decompress_error(status: TINFLStatus, output: Vec<u8>) -> Result<Vec<u8>, DecompressError> {
-    Err(DecompressError { status, output })
+    Err(DecompressError {
+        msg: "".to_string(),
+        status,
+        output,
+    })
 }
 
 /// Decompress the deflate-encoded data in `input` to a vector.
@@ -382,8 +387,7 @@ fn decompress_to_vec_inner_callback(
 #[cfg(all(test, feature = "with-alloc"))]
 mod test {
     use super::{
-        decompress_to_vec_zlib, decompress_to_vec_zlib_with_limit,
-        DecompressError, TINFLStatus,
+        decompress_to_vec_zlib, decompress_to_vec_zlib_with_limit, DecompressError, TINFLStatus,
     };
     const ENCODED: [u8; 20] = [
         120, 156, 243, 72, 205, 201, 201, 215, 81, 168, 202, 201, 76, 82, 4, 0, 27, 101, 4, 19,

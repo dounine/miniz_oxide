@@ -176,6 +176,7 @@ pub fn decompress_stream_callback<W: Write + Seek>(
             }
             _ => {
                 return Err(DecompressError {
+                    msg: "".to_string(),
                     status: TINFLStatus::IoError,
                     output: vec![],
                 })
