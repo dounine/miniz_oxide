@@ -1,5 +1,5 @@
 [package]
-name = "fast_miniz_oxide"
+name = "miniz_oxide"
 authors = ["Frommi <daniil.liferenko@gmail.com>"]
 version = "0.0.1"
 license = "MIT OR Zlib OR Apache-2.0"
