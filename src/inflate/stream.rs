@@ -160,57 +160,54 @@ impl InflateState {
     }
 }
 pub fn decompress_stream_callback<R: Read, W: Write + Seek>(
-    input: &mut R,
+    mut input: R,
     writer: &mut W,
     callback_func: &mut impl FnMut(usize),
 ) -> Result<(), DecompressError> {
     let mut state = InflateState::new_boxed(DataFormat::Raw);
     let mut flush: MZFlush = MZFlush::None;
-    let mut input_buffer = vec![0; 32 * 1024];
-    loop {
-        let bytes_read = input.read(&mut input_buffer).map_err(|e| DecompressError {
-            msg: format!("{:?}", e),
-            status: TINFLStatus::IoError,
-            output: vec![],
-        })?;
 
-        let mut input_slice = &input_buffer[..bytes_read];
-        if bytes_read == 0 {
-            flush = MZFlush::Finish;
-        }
-        loop {
-            let status = inflate(&mut state, input_slice, writer, flush, callback_func);
-            match status.status {
-                Ok(MZStatus::StreamEnd) => return Ok(()),
-                Ok(MZStatus::Ok) => {
-                    input_slice = &input_slice[status.bytes_consumed..];
-                    if input_slice.is_empty()
-                        && status.bytes_written == 0
-                        && flush != MZFlush::Finish
-                    {
-                        break;
-                    }
-                    if flush == MZFlush::Finish
-                        && status.bytes_consumed == 0
-                        && status.bytes_written == 0
-                    {
-                        break;
-                    }
-                }
-                _ => {
-                    return Err(DecompressError {
-                        msg: "".to_string(),
-                        status: TINFLStatus::IoError,
-                        output: vec![],
-                    })
-                }
+    let mut input_buffer = vec![0; 32 * 1024];
+    let mut input_offset = 0;
+    let mut input_end = 0;
+    let mut is_eof = false;
+
+    loop {
+        if input_offset == input_end && !is_eof {
+            input_offset = 0;
+            input_end = input.read(&mut input_buffer).map_err(|e| DecompressError {
+                msg: format!("{:?}", e),
+                status: TINFLStatus::IoError,
+                output: vec![],
+            })?;
+            if input_end == 0 {
+                is_eof = true;
+                flush = MZFlush::Finish;
             }
         }
-        if bytes_read == 0 {
-            break;
+
+        let status = inflate(
+            &mut state,
+            &input_buffer[input_offset..input_end],
+            writer,
+            flush,
+            callback_func,
+        );
+        match status.status {
+            Ok(MZStatus::StreamEnd) => return Ok(()),
+            Ok(MZStatus::Ok) => {
+                input_offset += status.bytes_consumed;
+                continue;
+            }
+            _ => {
+                return Err(DecompressError {
+                    msg: "".to_string(),
+                    status: TINFLStatus::IoError,
+                    output: vec![],
+                })
+            }
         }
     }
-    Ok(())
 }
 /// Try to decompress from `input` to `output` with the given [`InflateState`]
 ///

@@ -117,27 +117,26 @@ fn main() {
     // if true {
     //     return;
     // }
-    let origin = fs::read("./data/hi2.zip".to_string()).unwrap();
+    let origin = fs::read("./data/CodeResources".to_string()).unwrap();
     println!("origin size {}", origin.len());
     // let data1 = compress_to_vec(&origin, 6);
     let mut output = Cursor::new(vec![]);
+    let mut input = Cursor::new(&origin);
     compress_stream_callback(
-        &mut Cursor::new(&origin),
+        &mut input,
         &mut output,
         &CompressionLevel::DefaultLevel,
         &mut |v| {},
     )
     .unwrap();
+    // fs::write("./data/CodeResourcesCompress", output.into_inner()).unwrap();
     // assert_eq!(data1, output.into_inner());
     // let origin_de = decompress_to_vec_callback(&data1, &mut |v| {}).unwrap();
     // assert_eq!(origin, origin_de);
     let mut out = Cursor::new(vec![]);
-    decompress_stream_callback(
-        &mut Cursor::new(output.into_inner()),
-        &mut out,
-        &mut |v| {},
-    )
-    .unwrap();
+    let compressed = output.into_inner();
+    let mut input = Cursor::new(&compressed);
+    decompress_stream_callback(&mut input, &mut out, &mut |v| {}).unwrap();
     assert_eq!(origin, out.into_inner());
     //     match res.status {
     //         Ok(MZStatus::Ok) | Ok(MZStatus::StreamEnd) => {
