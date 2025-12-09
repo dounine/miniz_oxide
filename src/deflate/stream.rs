@@ -8,10 +8,10 @@ use crate::deflate::core::{compress, CompressorOxide, TDEFLFlush, TDEFLStatus};
 use crate::deflate::CompressionLevel;
 use crate::inflate::{DecompressError, TINFLStatus};
 use crate::{DataFormat, MZError, MZFlush, MZStatus, StreamResult};
-use std::io::{Seek, Write};
+use std::io::{Read, Seek, Write};
 
-pub fn compress_stream_callback<W: Write + Seek>(
-    mut input: &[u8],
+pub fn compress_stream_callback<R: Read, W: Write + Seek>(
+    input: &mut R,
     writer: &mut W,
     compression_level: &CompressionLevel,
     callback_func: &mut impl FnMut(usize),
@@ -19,34 +19,69 @@ pub fn compress_stream_callback<W: Write + Seek>(
     let mut compressor = Box::<CompressorOxide>::default();
     compressor.set_format_and_level(DataFormat::Raw, *compression_level as u8);
     let mut flush: MZFlush = MZFlush::None;
+    let mut input_buffer = vec![0; 32 * 1024];
+    let mut output_buffer = vec![0; 32 * 1024];
     loop {
-        let mut data = vec![0; 32 * 1024];
-        let res = deflate(&mut compressor, &input, &mut data, flush);
-        match res.status {
-            Ok(status) => {
-                input = &input[res.bytes_consumed..];
-                let data = &data[..res.bytes_written];
-                writer.write_all(data).map_err(|e| DecompressError {
-                    msg: format!("{:?}", e),
-                    status: TINFLStatus::IoError,
-                    output: vec![],
-                })?;
-                callback_func(res.bytes_consumed);
-                if input.is_empty() && status == MZStatus::StreamEnd {
-                    return Ok(());
-                } else {
-                    flush = MZFlush::Finish;
+        let bytes_read = input.read(&mut input_buffer).map_err(|e| DecompressError {
+            msg: format!("{:?}", e),
+            status: TINFLStatus::IoError,
+            output: vec![],
+        })?;
+
+        let mut input_slice = &input_buffer[..bytes_read];
+        if bytes_read == 0 {
+            flush = MZFlush::Finish;
+        }
+
+        loop {
+            let res = deflate(&mut compressor, input_slice, &mut output_buffer, flush);
+            match res.status {
+                Ok(status) => {
+                    input_slice = &input_slice[res.bytes_consumed..];
+                    let data = &output_buffer[..res.bytes_written];
+                    writer.write_all(data).map_err(|e| DecompressError {
+                        msg: format!("{:?}", e),
+                        status: TINFLStatus::IoError,
+                        output: vec![],
+                    })?;
+                    callback_func(res.bytes_consumed);
+                    if status == MZStatus::StreamEnd {
+                        return Ok(());
+                    }
+
+                    if input_slice.is_empty() && res.bytes_written == 0 && flush != MZFlush::Finish
+                    {
+                        break;
+                    }
+                    if flush == MZFlush::Finish
+                        && res.bytes_written == 0
+                        && res.bytes_consumed == 0
+                    {
+                        // If we are finishing and made no progress, we might be done or stuck.
+                        // If status is Ok, we should continue?
+                        // deflate returns StreamEnd if done.
+                        // If it returns Ok but wrote nothing, maybe it needs more output space?
+                        // But we refresh output space every call.
+                        // If it consumed nothing and wrote nothing, we are done.
+                        // But we checked StreamEnd above.
+                        break;
+                    }
+                }
+                Err(e) => {
+                    return Err(DecompressError {
+                        msg: format!("{:?}", e),
+                        status: TINFLStatus::IoError,
+                        output: vec![],
+                    })
                 }
             }
-            Err(e) => {
-                return Err(DecompressError {
-                    msg: format!("{:?}", e),
-                    status: TINFLStatus::IoError,
-                    output: vec![],
-                })
-            }
+        }
+
+        if bytes_read == 0 {
+            break;
         }
     }
+    Ok(())
 }
 /// Try to compress from input to output with the given [`CompressorOxide`].
 ///

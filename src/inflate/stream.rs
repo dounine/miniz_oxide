@@ -7,7 +7,7 @@ use crate::alloc::boxed::Box;
 use crate::inflate::core::{decompress, inflate_flags, DecompressorOxide, TINFL_LZ_DICT_SIZE};
 use crate::inflate::{DecompressError, TINFLStatus};
 use crate::{DataFormat, MZError, MZFlush, MZResult, MZStatus, StreamResult};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 /// Tag that determines reset policy of [InflateState](struct.InflateState.html)
 pub trait ResetPolicy {
@@ -159,30 +159,58 @@ impl InflateState {
         policy.reset(self)
     }
 }
-pub fn decompress_stream_callback<W: Write + Seek>(
-    input: &[u8],
+pub fn decompress_stream_callback<R: Read, W: Write + Seek>(
+    input: &mut R,
     writer: &mut W,
     callback_func: &mut impl FnMut(usize),
 ) -> Result<(), DecompressError> {
     let mut state = InflateState::new_boxed(DataFormat::Raw);
     let mut flush: MZFlush = MZFlush::None;
+    let mut input_buffer = vec![0; 32 * 1024];
     loop {
-        let status = inflate(&mut state, input, writer, flush, callback_func);
-        match status.status {
-            Ok(MZStatus::StreamEnd) => return Ok(()),
-            Ok(MZStatus::Ok) => {
-                flush = MZFlush::Finish;
-                continue;
-            }
-            _ => {
-                return Err(DecompressError {
-                    msg: "".to_string(),
-                    status: TINFLStatus::IoError,
-                    output: vec![],
-                })
+        let bytes_read = input.read(&mut input_buffer).map_err(|e| DecompressError {
+            msg: format!("{:?}", e),
+            status: TINFLStatus::IoError,
+            output: vec![],
+        })?;
+
+        let mut input_slice = &input_buffer[..bytes_read];
+        if bytes_read == 0 {
+            flush = MZFlush::Finish;
+        }
+        loop {
+            let status = inflate(&mut state, input_slice, writer, flush, callback_func);
+            match status.status {
+                Ok(MZStatus::StreamEnd) => return Ok(()),
+                Ok(MZStatus::Ok) => {
+                    input_slice = &input_slice[status.bytes_consumed..];
+                    if input_slice.is_empty()
+                        && status.bytes_written == 0
+                        && flush != MZFlush::Finish
+                    {
+                        break;
+                    }
+                    if flush == MZFlush::Finish
+                        && status.bytes_consumed == 0
+                        && status.bytes_written == 0
+                    {
+                        break;
+                    }
+                }
+                _ => {
+                    return Err(DecompressError {
+                        msg: "".to_string(),
+                        status: TINFLStatus::IoError,
+                        output: vec![],
+                    })
+                }
             }
         }
+        if bytes_read == 0 {
+            break;
+        }
     }
+    Ok(())
 }
 /// Try to decompress from `input` to `output` with the given [`InflateState`]
 ///
