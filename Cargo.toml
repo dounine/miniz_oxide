@@ -20,6 +20,7 @@ name = "miniz_oxide"
 members = [".", "example"]
 
 [dependencies]
+binrw = { path = "../binrw" }
 adler2 = { version = "2.0", default-features = false }
 simd-adler32 = { version = "0.3.3", default-features = false, optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }

@@ -4,10 +4,14 @@
 
 #[cfg(feature = "with-alloc")]
 use crate::alloc::boxed::Box;
-use crate::inflate::core::{decompress, inflate_flags, DecompressorOxide, TINFL_LZ_DICT_SIZE};
+use crate::inflate::core::{DecompressorOxide, TINFL_LZ_DICT_SIZE, decompress, inflate_flags};
 use crate::inflate::{DecompressError, TINFLStatus};
 use crate::{DataFormat, MZError, MZFlush, MZResult, MZStatus, StreamResult};
-use std::io::{Read, Seek, SeekFrom, Write};
+use binrw::io::read::Read;
+use binrw::io::seek::Seek;
+use binrw::io::write::Write;
+use std::io::SeekFrom;
+use std::pin::Pin;
 
 /// Tag that determines reset policy of [InflateState](struct.InflateState.html)
 pub trait ResetPolicy {
@@ -159,52 +163,60 @@ impl InflateState {
         policy.reset(self)
     }
 }
-pub fn decompress_stream_callback<R: Read, W: Write + Seek>(
+pub type ReadBytesFun<'a> = dyn FnMut(u64) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + 'a;
+pub fn decompress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Send>(
     mut input: R,
-    writer: &mut W,
-    callback_func: &mut impl FnMut(usize),
-) -> Result<(), DecompressError> {
-    let mut state = InflateState::new_boxed(DataFormat::Raw);
-    let mut flush: MZFlush = MZFlush::None;
+    writer: &'a mut W,
+    callback_func: &'a mut ReadBytesFun<'a>,
+) -> impl Future<Output = Result<(), DecompressError>> + Send + 'a {
+    async move {
+        let mut state = InflateState::new_boxed(DataFormat::Raw);
+        let mut flush: MZFlush = MZFlush::None;
 
-    let mut input_buffer = vec![0; 32 * 1024];
-    let mut input_offset = 0;
-    let mut input_end = 0;
-    let mut is_eof = false;
+        let mut input_buffer = vec![0; 32 * 1024];
+        let mut input_offset = 0;
+        let mut input_end = 0;
+        let mut is_eof = false;
 
-    loop {
-        if input_offset == input_end && !is_eof {
-            input_offset = 0;
-            input_end = input.read(&mut input_buffer).map_err(|e| DecompressError {
-                msg: format!("{:?}", e),
-                status: TINFLStatus::IoError,
-                output: vec![],
-            })?;
-            if input_end == 0 {
-                is_eof = true;
-                flush = MZFlush::Finish;
+        loop {
+            if input_offset == input_end && !is_eof {
+                input_offset = 0;
+                input_end =
+                    input
+                        .read(input_buffer.as_mut_slice())
+                        .await
+                        .map_err(|e| DecompressError {
+                            msg: format!("{:?}", e),
+                            status: TINFLStatus::IoError,
+                            output: vec![],
+                        })?;
+                if input_end == 0 {
+                    is_eof = true;
+                    flush = MZFlush::Finish;
+                }
             }
-        }
 
-        let status = inflate(
-            &mut state,
-            &input_buffer[input_offset..input_end],
-            writer,
-            flush,
-            callback_func,
-        );
-        match status.status {
-            Ok(MZStatus::StreamEnd) => return Ok(()),
-            Ok(MZStatus::Ok) => {
-                input_offset += status.bytes_consumed;
-                continue;
-            }
-            _ => {
-                return Err(DecompressError {
-                    msg: "".to_string(),
-                    status: TINFLStatus::IoError,
-                    output: vec![],
-                })
+            let status = inflate(
+                &mut state,
+                &input_buffer[input_offset..input_end],
+                writer,
+                flush,
+                callback_func,
+            )
+            .await;
+            match status.status {
+                Ok(MZStatus::StreamEnd) => return Ok(()),
+                Ok(MZStatus::Ok) => {
+                    input_offset += status.bytes_consumed;
+                    continue;
+                }
+                _ => {
+                    return Err(DecompressError {
+                        msg: "".to_string(),
+                        status: TINFLStatus::IoError,
+                        output: vec![],
+                    });
+                }
             }
         }
     }
@@ -232,136 +244,139 @@ pub fn decompress_stream_callback<R: Read, W: Write + Seek>(
 /// Returns [`MZError::Stream`] when called with [`MZFlush::Full`] (meaningless on
 /// decompression), or when called without [`MZFlush::Finish`] after an earlier call with
 /// [`MZFlush::Finish`] has been made.
-pub fn inflate<W: Write + Seek>(
-    state: &mut InflateState,
-    input: &[u8],
-    writer: &mut W,
+pub fn inflate<'a, W: Write + Seek + Send>(
+    state: &'a mut InflateState,
+    input: &'a [u8],
+    writer: &'a mut W,
     flush: MZFlush,
-    callback_func: &mut impl FnMut(usize),
-) -> StreamResult {
-    let mut bytes_consumed = 0;
-    let mut bytes_written = 0;
-    let mut next_in = input;
+    callback_func: &'a mut ReadBytesFun<'a>,
+) -> impl Future<Output = StreamResult> + Send + 'a {
+    async move {
+        let mut bytes_consumed = 0;
+        let mut bytes_written = 0;
+        let mut next_in = input;
 
-    if flush == MZFlush::Full {
-        return StreamResult::error(MZError::Stream);
-    }
+        if flush == MZFlush::Full {
+            return StreamResult::error(MZError::Stream);
+        }
 
-    let mut decomp_flags = if state.data_format == DataFormat::Zlib {
-        inflate_flags::TINFL_FLAG_COMPUTE_ADLER32
-    } else {
-        inflate_flags::TINFL_FLAG_IGNORE_ADLER32
-    };
-
-    if (state.data_format == DataFormat::Zlib)
-        | (state.data_format == DataFormat::ZLibIgnoreChecksum)
-    {
-        decomp_flags |= inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER;
-    }
-
-    let first_call = state.first_call;
-    state.first_call = false;
-    if state.last_status == TINFLStatus::FailedCannotMakeProgress {
-        return StreamResult::error(MZError::Buf);
-    }
-    if (state.last_status as i32) < 0 {
-        return StreamResult::error(MZError::Data);
-    }
-
-    if state.has_flushed && (flush != MZFlush::Finish) {
-        return StreamResult::error(MZError::Stream);
-    }
-    state.has_flushed |= flush == MZFlush::Finish;
-
-    if (flush == MZFlush::Finish) && first_call {
-        decomp_flags |= inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
-
-        // The caller is indicating that they want to finish the compression and this is the first call with the current stream
-        // so we can simply write directly to the output buffer.
-        // If there is not enough space for all of the decompressed data we will end up with a failure regardless.
-        let status = decompress(
-            &mut state.decomp,
-            next_in,
-            &mut state.dict,
-            0,
-            decomp_flags,
-            &mut 0,
-            &mut 0,
-            |_v| {},
-        );
-        let in_bytes = status.1;
-        let out_bytes = status.2;
-        let status = status.0;
-
-        state.last_status = status;
-
-        bytes_consumed += in_bytes;
-        bytes_written += out_bytes;
-
-        let ret_status = {
-            if status == TINFLStatus::FailedCannotMakeProgress {
-                Err(MZError::Buf)
-            } else if (status as i32) < 0 {
-                Err(MZError::Data)
-            } else if status != TINFLStatus::Done {
-                state.last_status = TINFLStatus::Failed;
-                Err(MZError::Buf)
-            } else {
-                Ok(MZStatus::StreamEnd)
-            }
+        let mut decomp_flags = if state.data_format == DataFormat::Zlib {
+            inflate_flags::TINFL_FLAG_COMPUTE_ADLER32
+        } else {
+            inflate_flags::TINFL_FLAG_IGNORE_ADLER32
         };
-        return StreamResult {
-            bytes_consumed,
-            bytes_written,
-            status: ret_status,
-        };
-    }
 
-    if flush != MZFlush::Finish {
-        decomp_flags |= inflate_flags::TINFL_FLAG_HAS_MORE_INPUT;
-    }
+        if (state.data_format == DataFormat::Zlib)
+            | (state.data_format == DataFormat::ZLibIgnoreChecksum)
+        {
+            decomp_flags |= inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER;
+        }
 
-    if state.dict_avail != 0 {
-        bytes_written += push_dict_out(state, writer);
-        return StreamResult {
-            bytes_consumed,
-            bytes_written,
-            status: Ok(
-                if (state.last_status == TINFLStatus::Done) && (state.dict_avail == 0) {
-                    MZStatus::StreamEnd
+        let first_call = state.first_call;
+        state.first_call = false;
+        if state.last_status == TINFLStatus::FailedCannotMakeProgress {
+            return StreamResult::error(MZError::Buf);
+        }
+        if (state.last_status as i32) < 0 {
+            return StreamResult::error(MZError::Data);
+        }
+
+        if state.has_flushed && (flush != MZFlush::Finish) {
+            return StreamResult::error(MZError::Stream);
+        }
+        state.has_flushed |= flush == MZFlush::Finish;
+
+        if (flush == MZFlush::Finish) && first_call {
+            decomp_flags |= inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
+
+            // The caller is indicating that they want to finish the compression and this is the first call with the current stream
+            // so we can simply write directly to the output buffer.
+            // If there is not enough space for all of the decompressed data we will end up with a failure regardless.
+            let status = decompress(
+                &mut state.decomp,
+                next_in,
+                &mut state.dict,
+                0,
+                decomp_flags,
+                &mut 0,
+                &mut 0,
+                |_v| {},
+            );
+            let in_bytes = status.1;
+            let out_bytes = status.2;
+            let status = status.0;
+
+            state.last_status = status;
+
+            bytes_consumed += in_bytes;
+            bytes_written += out_bytes;
+
+            let ret_status = {
+                if status == TINFLStatus::FailedCannotMakeProgress {
+                    Err(MZError::Buf)
+                } else if (status as i32) < 0 {
+                    Err(MZError::Data)
+                } else if status != TINFLStatus::Done {
+                    state.last_status = TINFLStatus::Failed;
+                    Err(MZError::Buf)
                 } else {
-                    MZStatus::Ok
-                },
-            ),
-        };
-    }
+                    Ok(MZStatus::StreamEnd)
+                }
+            };
+            return StreamResult {
+                bytes_consumed,
+                bytes_written,
+                status: ret_status,
+            };
+        }
 
-    let status = inflate_loop(
-        state,
-        &mut next_in,
-        writer,
-        &mut bytes_consumed,
-        &mut bytes_written,
-        decomp_flags,
-        flush,
-        callback_func,
-    );
-    StreamResult {
-        bytes_consumed,
-        bytes_written,
-        status,
+        if flush != MZFlush::Finish {
+            decomp_flags |= inflate_flags::TINFL_FLAG_HAS_MORE_INPUT;
+        }
+
+        if state.dict_avail != 0 {
+            bytes_written += push_dict_out(state, writer).await;
+            return StreamResult {
+                bytes_consumed,
+                bytes_written,
+                status: Ok(
+                    if (state.last_status == TINFLStatus::Done) && (state.dict_avail == 0) {
+                        MZStatus::StreamEnd
+                    } else {
+                        MZStatus::Ok
+                    },
+                ),
+            };
+        }
+
+        let status = inflate_loop(
+            state,
+            &mut next_in,
+            writer,
+            &mut bytes_consumed,
+            &mut bytes_written,
+            decomp_flags,
+            flush,
+            callback_func,
+        )
+        .await;
+        StreamResult {
+            bytes_consumed,
+            bytes_written,
+            status,
+        }
     }
 }
 
-fn inflate_loop<W: Write + Seek>(
-    state: &mut InflateState,
-    next_in: &mut &[u8],
-    next_out: &mut W,
-    total_in: &mut usize,
-    total_out: &mut usize,
+async fn inflate_loop<'a,W: Write + Seek>(
+    state: &'a mut InflateState,
+    next_in: &'a mut &[u8],
+    next_out: &'a mut W,
+    total_in: &'a mut usize,
+    total_out: &'a mut usize,
     decomp_flags: u32,
     flush: MZFlush,
-    callback_func: &mut impl FnMut(usize),
+    callback_func: &'a mut ReadBytesFun<'a>,
 ) -> MZResult {
     let orig_in_len = next_in.len();
     loop {
@@ -381,10 +396,10 @@ fn inflate_loop<W: Write + Seek>(
         *total_in += in_consumed;
 
         state.dict_avail = out_consumed;
-        *total_out += push_dict_out(state, next_out);
-        callback_func(in_consumed);
+        *total_out += push_dict_out(state, next_out).await;
+        callback_func(in_consumed as u64).await;
 
-        let length = next_out.seek(SeekFrom::End(0)).unwrap();
+        let length = next_out.seek(SeekFrom::End(0)).await.unwrap();
         // Finish was requested but we didn't end on an end block.
         if status == TINFLStatus::FailedCannotMakeProgress {
             return Err(MZError::Buf);
@@ -429,10 +444,10 @@ fn inflate_loop<W: Write + Seek>(
     }
 }
 
-fn push_dict_out<W: Write>(state: &mut InflateState, next_out: &mut W) -> usize {
+async fn push_dict_out<W: Write>(state: &mut InflateState, next_out: &mut W) -> usize {
     let data_size = state.dict_avail;
     let data = &state.dict[state.dict_ofs..state.dict_ofs + data_size];
-    next_out.write(data).unwrap();
+    next_out.write(data).await.unwrap();
     state.dict_avail -= data_size;
     state.dict_ofs = (state.dict_ofs + (data_size)) & (TINFL_LZ_DICT_SIZE - 1);
     data_size

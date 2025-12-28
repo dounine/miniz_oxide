@@ -4,68 +4,76 @@
 //!
 //! There is no DeflateState as the needed state is contained in the compressor struct itself.
 
-use crate::deflate::core::{compress, CompressorOxide, TDEFLFlush, TDEFLStatus};
 use crate::deflate::CompressionLevel;
+use crate::deflate::core::{CompressorOxide, TDEFLFlush, TDEFLStatus, compress};
+use crate::inflate::stream::ReadBytesFun;
 use crate::inflate::{DecompressError, TINFLStatus};
 use crate::{DataFormat, MZError, MZFlush, MZStatus, StreamResult};
-use std::io::{Read, Seek, Write};
+use binrw::io::read::Read;
+use binrw::io::seek::Seek;
+use binrw::io::write::Write;
 
-pub fn compress_stream_callback<R: Read, W: Write + Seek>(
+pub fn compress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Send>(
     mut input: R,
-    writer: &mut W,
-    compression_level: &CompressionLevel,
-    callback_func: &mut impl FnMut(usize),
-) -> Result<(), DecompressError> {
-    let mut compressor = Box::<CompressorOxide>::default();
-    compressor.set_format_and_level(DataFormat::Raw, *compression_level as u8);
-    let mut flush: MZFlush = MZFlush::None;
+    writer: &'a mut W,
+    compression_level: CompressionLevel,
+    callback_func: &'a mut ReadBytesFun<'a>,
+) -> impl Future<Output = Result<(), DecompressError>> + Send + 'a {
+    async move {
+        let mut compressor = Box::<CompressorOxide>::default();
+        compressor.set_format_and_level(DataFormat::Raw, compression_level as u8);
+        let mut flush: MZFlush = MZFlush::None;
 
-    let mut input_buffer = vec![0; 32 * 1024];
-    let mut input_offset = 0;
-    let mut input_end = 0;
-    let mut is_eof = false;
+        let mut input_buffer = vec![0; 32 * 1024];
+        let mut input_offset = 0;
+        let mut input_end = 0;
+        let mut is_eof = false;
 
-    loop {
-        if input_offset == input_end && !is_eof {
-            input_offset = 0;
-            input_end = input.read(&mut input_buffer).map_err(|e| DecompressError {
-                msg: format!("{:?}", e),
-                status: TINFLStatus::IoError,
-                output: vec![],
-            })?;
-            if input_end == 0 {
-                is_eof = true;
-                flush = MZFlush::Finish;
-            }
-        }
-
-        let mut data = vec![0; 32 * 1024];
-        let res = deflate(
-            &mut compressor,
-            &input_buffer[input_offset..input_end],
-            &mut data,
-            flush,
-        );
-        match res.status {
-            Ok(status) => {
-                input_offset += res.bytes_consumed;
-                let data = &data[..res.bytes_written];
-                writer.write_all(data).map_err(|e| DecompressError {
-                    msg: format!("{:?}", e),
-                    status: TINFLStatus::IoError,
-                    output: vec![],
-                })?;
-                callback_func(res.bytes_consumed);
-                if status == MZStatus::StreamEnd {
-                    return Ok(());
+        loop {
+            if input_offset == input_end && !is_eof {
+                input_offset = 0;
+                input_end = input
+                    .read(&mut input_buffer)
+                    .await
+                    .map_err(|e| DecompressError {
+                        msg: format!("{:?}", e),
+                        status: TINFLStatus::IoError,
+                        output: vec![],
+                    })?;
+                if input_end == 0 {
+                    is_eof = true;
+                    flush = MZFlush::Finish;
                 }
             }
-            Err(e) => {
-                return Err(DecompressError {
-                    msg: format!("{:?}", e),
-                    status: TINFLStatus::IoError,
-                    output: vec![],
-                })
+
+            let mut data = vec![0; 32 * 1024];
+            let res = deflate(
+                &mut compressor,
+                &input_buffer[input_offset..input_end],
+                &mut data,
+                flush,
+            );
+            match res.status {
+                Ok(status) => {
+                    input_offset += res.bytes_consumed;
+                    let data = &data[..res.bytes_written];
+                    writer.write_all(data).await.map_err(|e| DecompressError {
+                        msg: format!("{:?}", e),
+                        status: TINFLStatus::IoError,
+                        output: vec![],
+                    })?;
+                    callback_func(res.bytes_consumed as u64).await;
+                    if status == MZStatus::StreamEnd {
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    return Err(DecompressError {
+                        msg: format!("{:?}", e),
+                        status: TINFLStatus::IoError,
+                        output: vec![],
+                    });
+                }
             }
         }
     }
