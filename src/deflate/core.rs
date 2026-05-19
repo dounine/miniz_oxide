@@ -193,7 +193,7 @@ pub mod deflate_flags {
 ///
 /// The non-default settings offer some special-case compression variants.
 #[repr(i32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum CompressionStrategy {
     /// Don't use any of the special strategies.
     Default = 0,
@@ -216,7 +216,7 @@ impl From<CompressionStrategy> for i32 {
 }
 
 /// A list of deflate flush types.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum TDEFLFlush {
     /// Normal operation.
     ///
@@ -262,7 +262,7 @@ impl TDEFLFlush {
 
 /// Return status of compression.
 #[repr(i32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum TDEFLStatus {
     /// Usage error.
     ///

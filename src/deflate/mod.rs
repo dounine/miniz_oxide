@@ -14,7 +14,7 @@ use self::core::*;
 /// `NoCompression` and `Bestspeed` have special meanings, the other levels determine the number
 /// of checks for matches in the hash chains and whether to use lazy or greedy parsing.
 #[repr(i32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum CompressionLevel {
     /// Don't do any compression, only output uncompressed blocks.
     NoCompression = 0,

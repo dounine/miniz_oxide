@@ -209,7 +209,7 @@ pub fn decompress_to_vec_zlib_with_limit(
 ///
 /// Returns [`Vec`] of decompressed data on success and the [error struct][DecompressError] with details on failure.
 #[cfg(feature = "with-alloc")]
-fn decompress_to_vec_inner(
+pub fn decompress_to_vec_inner(
     mut input: &[u8],
     flags: u32,
     max_output_size: usize,

@@ -179,7 +179,7 @@ impl DataFormat {
 pub type MZResult = Result<MZStatus, MZError>;
 
 /// A structure containing the result of a call to the inflate or deflate streaming functions.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct StreamResult {
     /// The number of bytes consumed from the input slice.
     pub bytes_consumed: usize,

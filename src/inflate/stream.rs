@@ -396,8 +396,9 @@ async fn inflate_loop<'a,W: Write + Seek>(
         *total_in += in_consumed;
 
         state.dict_avail = out_consumed;
-        *total_out += push_dict_out(state, next_out).await;
-        callback_func(in_consumed as u64).await;
+        let out_length = push_dict_out(state, next_out).await;
+        *total_out += out_length;
+        callback_func(out_length as u64).await;
 
         let length = next_out.seek(SeekFrom::End(0)).await.unwrap();
         // Finish was requested but we didn't end on an end block.
