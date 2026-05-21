@@ -56,12 +56,14 @@ pub fn compress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Send>
             match res.status {
                 Ok(status) => {
                     input_offset += res.bytes_consumed;
-                    let data = &data[..res.bytes_written];
-                    writer.write_all(data).await.map_err(|e| DecompressError {
-                        msg: format!("{:?}", e),
-                        status: TINFLStatus::IoError,
-                        output: vec![],
-                    })?;
+                    if res.bytes_written > 0 {
+                        let data = &data[..res.bytes_written];
+                        writer.write_all(data).await.map_err(|e| DecompressError {
+                            msg: format!("{:?}", e),
+                            status: TINFLStatus::IoError,
+                            output: vec![],
+                        })?;
+                    }
                     if res.bytes_consumed > 0 {
                         callback_func(res.bytes_consumed as u64).await;
                     }
