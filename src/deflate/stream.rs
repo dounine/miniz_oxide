@@ -62,7 +62,9 @@ pub fn compress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Send>
                         status: TINFLStatus::IoError,
                         output: vec![],
                     })?;
-                    callback_func(res.bytes_consumed as u64).await;
+                    if res.bytes_consumed > 0 {
+                        callback_func(res.bytes_consumed as u64).await;
+                    }
                     if status == MZStatus::StreamEnd {
                         return Ok(());
                     }

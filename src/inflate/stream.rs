@@ -368,7 +368,7 @@ pub fn inflate<'a, W: Write + Seek + Send>(
     }
 }
 
-async fn inflate_loop<'a,W: Write + Seek>(
+async fn inflate_loop<'a, W: Write + Seek>(
     state: &'a mut InflateState,
     next_in: &'a mut &[u8],
     next_out: &'a mut W,
@@ -398,7 +398,9 @@ async fn inflate_loop<'a,W: Write + Seek>(
         state.dict_avail = out_consumed;
         let out_length = push_dict_out(state, next_out).await;
         *total_out += out_length;
-        callback_func(out_length as u64).await;
+        if out_length > 0 {
+            callback_func(out_length as u64).await;
+        }
 
         let length = next_out.seek(SeekFrom::End(0)).await.unwrap();
         // Finish was requested but we didn't end on an end block.
