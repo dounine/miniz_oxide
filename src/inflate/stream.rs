@@ -399,7 +399,7 @@ async fn inflate_loop<'a, W: Write + Seek>(
         let out_length = push_dict_out(state, next_out).await;
         *total_out += out_length;
         if out_length > 0 {
-            callback_func(out_length as u64).await;
+            callback_func(in_consumed as u64).await;
         }
 
         let length = next_out.seek(SeekFrom::End(0)).await.unwrap();
