@@ -6,8 +6,8 @@
 
 use crate::deflate::CompressionLevel;
 use crate::deflate::core::{CompressorOxide, TDEFLFlush, TDEFLStatus, compress};
+use crate::error::Error;
 use crate::inflate::stream::ReadBytesFun;
-use crate::inflate::{DecompressError, TINFLStatus};
 use crate::{DataFormat, MZError, MZFlush, MZStatus, StreamResult};
 use binrw::io::read::Read;
 use binrw::io::seek::Seek;
@@ -18,7 +18,7 @@ pub fn compress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Send>
     writer: &'a mut W,
     compression_level: CompressionLevel,
     callback_func: &'a mut ReadBytesFun<'a>,
-) -> impl Future<Output = Result<(), DecompressError>> + Send + 'a {
+) -> impl Future<Output = Result<(), Error>> + Send + 'a {
     async move {
         let mut compressor = Box::<CompressorOxide>::default();
         compressor.set_format_and_level(DataFormat::Raw, compression_level as u8);
@@ -32,14 +32,7 @@ pub fn compress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Send>
         loop {
             if input_offset == input_end && !is_eof {
                 input_offset = 0;
-                input_end = input
-                    .read(&mut input_buffer)
-                    .await
-                    .map_err(|e| DecompressError {
-                        msg: format!("{:?}", e),
-                        status: TINFLStatus::IoError,
-                        output: vec![],
-                    })?;
+                input_end = input.read(&mut input_buffer).await?;
                 if input_end == 0 {
                     is_eof = true;
                     flush = MZFlush::Finish;
@@ -58,25 +51,17 @@ pub fn compress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Send>
                     input_offset += res.bytes_consumed;
                     if res.bytes_written > 0 {
                         let data = &data[..res.bytes_written];
-                        writer.write_all(data).await.map_err(|e| DecompressError {
-                            msg: format!("{:?}", e),
-                            status: TINFLStatus::IoError,
-                            output: vec![],
-                        })?;
+                        writer.write_all(data).await?;
                     }
                     if res.bytes_consumed > 0 {
-                        callback_func(res.bytes_consumed as u64).await;
+                        callback_func(res.bytes_consumed as u64).await?;
                     }
                     if status == MZStatus::StreamEnd {
                         return Ok(());
                     }
                 }
                 Err(e) => {
-                    return Err(DecompressError {
-                        msg: format!("{:?}", e),
-                        status: TINFLStatus::IoError,
-                        output: vec![],
-                    });
+                    return Err(Error::Msg(format!("{:?}", e)));
                 }
             }
         }

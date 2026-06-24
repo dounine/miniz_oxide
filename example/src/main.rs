@@ -6,15 +6,15 @@ use miniz_oxide::{MZStatus, deflate};
 // use miniz_oxide::inflate::{
 //     decompress_to_vec, decompress_to_vec_callback, decompress_to_vec_with_limit,
 // };
-use miniz_oxide::deflate::{compress_to_vec, CompressionLevel};
 use miniz_oxide::deflate::core::CompressorOxide;
 use miniz_oxide::deflate::stream::compress_stream_callback;
+use miniz_oxide::deflate::{CompressionLevel, compress_to_vec};
 use miniz_oxide::inflate::decompress_to_vec_callback;
+use miniz_oxide::inflate::stream::decompress_stream_callback;
 use miniz_oxide::{DataFormat, MZFlush};
 use std::fs;
 use std::io::Cursor;
 use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeFull};
-use miniz_oxide::inflate::stream::decompress_stream_callback;
 
 pub struct OffsetVec<T> {
     inner: Vec<T>,
@@ -125,10 +125,9 @@ fn main() {
     compress_stream_callback(
         &mut input,
         &mut output,
-        &CompressionLevel::DefaultLevel,
-        &mut |v| {},
-    )
-    .unwrap();
+        CompressionLevel::DefaultLevel,
+        &mut |v| Box::pin(async move { Ok(()) }),
+    );
     // fs::write("./data/CodeResourcesCompress", output.into_inner()).unwrap();
     // assert_eq!(data1, output.into_inner());
     // let origin_de = decompress_to_vec_callback(&data1, &mut |v| {}).unwrap();
@@ -136,7 +135,9 @@ fn main() {
     let mut out = Cursor::new(vec![]);
     let compressed = output.into_inner();
     let mut input = Cursor::new(&compressed);
-    decompress_stream_callback(&mut input, &mut out, &mut |v| {}).unwrap();
+    decompress_stream_callback(&mut input, &mut out, &mut |v| {
+        Box::pin(async move { Ok(()) })
+    });
     assert_eq!(origin, out.into_inner());
     //     match res.status {
     //         Ok(MZStatus::Ok) | Ok(MZStatus::StreamEnd) => {

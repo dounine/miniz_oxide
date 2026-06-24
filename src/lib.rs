@@ -34,7 +34,7 @@ pub mod inflate;
 #[cfg(feature = "serde")]
 pub mod serde;
 mod shared;
-
+pub mod error;
 pub use crate::shared::update_adler32 as mz_adler32_oxide;
 pub use crate::shared::{MZ_ADLER32_INIT, MZ_DEFAULT_WINDOW_BITS};
 
@@ -108,7 +108,7 @@ pub enum MZStatus {
 /// These are emitted as the [`Err`] side of a [`MZResult`] in the [`StreamResult`] returned from
 /// [`deflate::stream::deflate()`] or [`inflate::stream::inflate()`].
 #[repr(i32)]
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Debug)]
 pub enum MZError {
     /// Unused
     ErrNo = -1,
@@ -179,7 +179,6 @@ impl DataFormat {
 pub type MZResult = Result<MZStatus, MZError>;
 
 /// A structure containing the result of a call to the inflate or deflate streaming functions.
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct StreamResult {
     /// The number of bytes consumed from the input slice.
     pub bytes_consumed: usize,
@@ -208,6 +207,6 @@ impl core::convert::From<StreamResult> for MZResult {
 
 impl core::convert::From<&StreamResult> for MZResult {
     fn from(res: &StreamResult) -> Self {
-        res.status
+        res.status.clone()
     }
 }

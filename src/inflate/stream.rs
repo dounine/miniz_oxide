@@ -4,9 +4,11 @@
 
 #[cfg(feature = "with-alloc")]
 use crate::alloc::boxed::Box;
+use crate::error::Error;
+use crate::inflate::TINFLStatus;
 use crate::inflate::core::{DecompressorOxide, TINFL_LZ_DICT_SIZE, decompress, inflate_flags};
-use crate::inflate::{DecompressError, TINFLStatus};
 use crate::{DataFormat, MZError, MZFlush, MZResult, MZStatus, StreamResult};
+use binrw::BinResult;
 use binrw::io::read::Read;
 use binrw::io::seek::Seek;
 use binrw::io::write::Write;
@@ -163,12 +165,13 @@ impl InflateState {
         policy.reset(self)
     }
 }
-pub type ReadBytesFun<'a> = dyn FnMut(u64) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + 'a;
+pub type ReadBytesFun<'a> =
+    dyn FnMut(u64) -> Pin<Box<dyn Future<Output = BinResult<()>> + Send>> + Send + 'a;
 pub fn decompress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Send>(
     mut input: R,
     writer: &'a mut W,
     callback_func: &'a mut ReadBytesFun<'a>,
-) -> impl Future<Output = Result<(), DecompressError>> + Send + 'a {
+) -> impl Future<Output = Result<(), Error>> + Send + 'a {
     async move {
         let mut state = InflateState::new_boxed(DataFormat::Raw);
         let mut flush: MZFlush = MZFlush::None;
@@ -181,15 +184,7 @@ pub fn decompress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Sen
         loop {
             if input_offset == input_end && !is_eof {
                 input_offset = 0;
-                input_end =
-                    input
-                        .read(input_buffer.as_mut_slice())
-                        .await
-                        .map_err(|e| DecompressError {
-                            msg: format!("{:?}", e),
-                            status: TINFLStatus::IoError,
-                            output: vec![],
-                        })?;
+                input_end = input.read(input_buffer.as_mut_slice()).await?;
                 if input_end == 0 {
                     is_eof = true;
                     flush = MZFlush::Finish;
@@ -203,7 +198,7 @@ pub fn decompress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Sen
                 flush,
                 callback_func,
             )
-            .await;
+            .await?;
             match status.status {
                 Ok(MZStatus::StreamEnd) => return Ok(()),
                 Ok(MZStatus::Ok) => {
@@ -211,11 +206,7 @@ pub fn decompress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Sen
                     continue;
                 }
                 _ => {
-                    return Err(DecompressError {
-                        msg: "".to_string(),
-                        status: TINFLStatus::IoError,
-                        output: vec![],
-                    });
+                    return Err(Error::Msg("mz error".to_string()));
                 }
             }
         }
@@ -250,14 +241,14 @@ pub fn inflate<'a, W: Write + Seek + Send>(
     writer: &'a mut W,
     flush: MZFlush,
     callback_func: &'a mut ReadBytesFun<'a>,
-) -> impl Future<Output = StreamResult> + Send + 'a {
+) -> impl Future<Output = Result<StreamResult, Error>> + Send + 'a {
     async move {
         let mut bytes_consumed = 0;
         let mut bytes_written = 0;
         let mut next_in = input;
 
         if flush == MZFlush::Full {
-            return StreamResult::error(MZError::Stream);
+            return Ok(StreamResult::error(MZError::Stream));
         }
 
         let mut decomp_flags = if state.data_format == DataFormat::Zlib {
@@ -275,14 +266,14 @@ pub fn inflate<'a, W: Write + Seek + Send>(
         let first_call = state.first_call;
         state.first_call = false;
         if state.last_status == TINFLStatus::FailedCannotMakeProgress {
-            return StreamResult::error(MZError::Buf);
+            return Ok(StreamResult::error(MZError::Buf));
         }
         if (state.last_status as i32) < 0 {
-            return StreamResult::error(MZError::Data);
+            return Ok(StreamResult::error(MZError::Data));
         }
 
         if state.has_flushed && (flush != MZFlush::Finish) {
-            return StreamResult::error(MZError::Stream);
+            return Ok(StreamResult::error(MZError::Stream));
         }
         state.has_flushed |= flush == MZFlush::Finish;
 
@@ -323,11 +314,11 @@ pub fn inflate<'a, W: Write + Seek + Send>(
                     Ok(MZStatus::StreamEnd)
                 }
             };
-            return StreamResult {
+            return Ok(StreamResult {
                 bytes_consumed,
                 bytes_written,
                 status: ret_status,
-            };
+            });
         }
 
         if flush != MZFlush::Finish {
@@ -336,7 +327,7 @@ pub fn inflate<'a, W: Write + Seek + Send>(
 
         if state.dict_avail != 0 {
             bytes_written += push_dict_out(state, writer).await;
-            return StreamResult {
+            return Ok(StreamResult {
                 bytes_consumed,
                 bytes_written,
                 status: Ok(
@@ -346,7 +337,7 @@ pub fn inflate<'a, W: Write + Seek + Send>(
                         MZStatus::Ok
                     },
                 ),
-            };
+            });
         }
 
         let status = inflate_loop(
@@ -359,12 +350,12 @@ pub fn inflate<'a, W: Write + Seek + Send>(
             flush,
             callback_func,
         )
-        .await;
-        StreamResult {
+        .await?;
+        Ok(StreamResult {
             bytes_consumed,
             bytes_written,
             status,
-        }
+        })
     }
 }
 
@@ -377,7 +368,7 @@ async fn inflate_loop<'a, W: Write + Seek>(
     decomp_flags: u32,
     flush: MZFlush,
     callback_func: &'a mut ReadBytesFun<'a>,
-) -> MZResult {
+) -> Result<MZResult, Error> {
     let orig_in_len = next_in.len();
     loop {
         let (status, in_consumed, out_consumed) = decompress(
@@ -399,23 +390,23 @@ async fn inflate_loop<'a, W: Write + Seek>(
         let out_length = push_dict_out(state, next_out).await;
         *total_out += out_length;
         if out_length > 0 {
-            callback_func(in_consumed as u64).await;
+            callback_func(in_consumed as u64).await?;
         }
 
         let length = next_out.seek(SeekFrom::End(0)).await.unwrap();
         // Finish was requested but we didn't end on an end block.
         if status == TINFLStatus::FailedCannotMakeProgress {
-            return Err(MZError::Buf);
+            return Ok(Err(MZError::Buf));
         }
         // The stream was corrupted, and decompression failed.
         else if (status as i32) < 0 {
-            return Err(MZError::Data);
+            return Ok(Err(MZError::Data));
         }
 
         // The decompressor has flushed all it's data and is waiting for more input, but
         // there was no more input provided.
         if (status == TINFLStatus::NeedsMoreInput) && orig_in_len == 0 {
-            return Err(MZError::Buf);
+            return Ok(Err(MZError::Buf));
         }
 
         if flush == MZFlush::Finish {
@@ -423,13 +414,13 @@ async fn inflate_loop<'a, W: Write + Seek>(
                 // There is not enough space in the output buffer to flush the remaining
                 // decompressed data in the internal buffer.
                 return if state.dict_avail != 0 {
-                    Err(MZError::Buf)
+                    Ok(Err(MZError::Buf))
                 } else {
-                    Ok(MZStatus::StreamEnd)
+                    Ok(Ok(MZStatus::StreamEnd))
                 };
             // No more space in the output buffer, but we're not done.
             } else if length == 0 {
-                return Err(MZError::Buf);
+                return Ok(Err(MZError::Buf));
             }
         } else {
             // We're not expected to finish, so it's fine if we can't flush everything yet.
@@ -437,10 +428,10 @@ async fn inflate_loop<'a, W: Write + Seek>(
             if (status == TINFLStatus::Done) || empty_buf || (state.dict_avail != 0) {
                 return if (status == TINFLStatus::Done) && (state.dict_avail == 0) {
                     // No more data left, we're done.
-                    Ok(MZStatus::StreamEnd)
+                    Ok(Ok(MZStatus::StreamEnd))
                 } else {
                     // Ok for now, still waiting for more input data or output space.
-                    Ok(MZStatus::Ok)
+                    Ok(Ok(MZStatus::Ok))
                 };
             }
         }
