@@ -126,7 +126,6 @@ fn main() {
         &mut input,
         &mut output,
         CompressionLevel::DefaultLevel,
-        &mut |v| Box::pin(async move { Ok(()) }),
     );
     // fs::write("./data/CodeResourcesCompress", output.into_inner()).unwrap();
     // assert_eq!(data1, output.into_inner());
