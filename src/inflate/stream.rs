@@ -167,10 +167,9 @@ impl InflateState {
 }
 pub type ReadBytesFun<'a> =
     dyn FnMut(u64) -> Pin<Box<dyn Future<Output = BinResult<()>> + Send>> + Send + 'a;
-pub fn decompress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Send>(
+pub fn decompress_stream<'a, R: Read + Send + 'a, W: Write + Seek + Send>(
     mut input: R,
     writer: &'a mut W,
-    callback_func: &'a mut ReadBytesFun<'a>,
 ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
     async move {
         let mut state = InflateState::new_boxed(DataFormat::Raw);
@@ -196,7 +195,6 @@ pub fn decompress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Sen
                 &input_buffer[input_offset..input_end],
                 writer,
                 flush,
-                callback_func,
             )
             .await?;
             match status.status {
@@ -240,7 +238,6 @@ pub fn inflate<'a, W: Write + Seek + Send>(
     input: &'a [u8],
     writer: &'a mut W,
     flush: MZFlush,
-    callback_func: &'a mut ReadBytesFun<'a>,
 ) -> impl Future<Output = Result<StreamResult, Error>> + Send + 'a {
     async move {
         let mut bytes_consumed = 0;
@@ -326,7 +323,7 @@ pub fn inflate<'a, W: Write + Seek + Send>(
         }
 
         if state.dict_avail != 0 {
-            bytes_written += push_dict_out(state, writer).await;
+            bytes_written += push_dict_out(state, writer).await?;
             return Ok(StreamResult {
                 bytes_consumed,
                 bytes_written,
@@ -348,7 +345,6 @@ pub fn inflate<'a, W: Write + Seek + Send>(
             &mut bytes_written,
             decomp_flags,
             flush,
-            callback_func,
         )
         .await?;
         Ok(StreamResult {
@@ -359,7 +355,7 @@ pub fn inflate<'a, W: Write + Seek + Send>(
     }
 }
 
-async fn inflate_loop<'a, W: Write + Seek>(
+async fn inflate_loop<'a, W: Write + Seek + Send>(
     state: &'a mut InflateState,
     next_in: &'a mut &[u8],
     next_out: &'a mut W,
@@ -367,7 +363,6 @@ async fn inflate_loop<'a, W: Write + Seek>(
     total_out: &'a mut usize,
     decomp_flags: u32,
     flush: MZFlush,
-    callback_func: &'a mut ReadBytesFun<'a>,
 ) -> Result<MZResult, Error> {
     let orig_in_len = next_in.len();
     loop {
@@ -387,13 +382,10 @@ async fn inflate_loop<'a, W: Write + Seek>(
         *total_in += in_consumed;
 
         state.dict_avail = out_consumed;
-        let out_length = push_dict_out(state, next_out).await;
+        let out_length = push_dict_out(state, next_out).await?;
         *total_out += out_length;
-        if out_length > 0 {
-            callback_func(in_consumed as u64).await?;
-        }
 
-        let length = next_out.seek(SeekFrom::End(0)).await.unwrap();
+        let length = next_out.seek(SeekFrom::End(0)).await?;
         // Finish was requested but we didn't end on an end block.
         if status == TINFLStatus::FailedCannotMakeProgress {
             return Ok(Err(MZError::Buf));
@@ -438,13 +430,19 @@ async fn inflate_loop<'a, W: Write + Seek>(
     }
 }
 
-async fn push_dict_out<W: Write>(state: &mut InflateState, next_out: &mut W) -> usize {
+async fn push_dict_out<W: Write + Send>(
+    state: &mut InflateState,
+    next_out: &mut W,
+) -> Result<usize, Error> {
     let data_size = state.dict_avail;
     let data = &state.dict[state.dict_ofs..state.dict_ofs + data_size];
-    next_out.write(data).await.unwrap();
+    let writeten = next_out.write(data).await?;
     state.dict_avail -= data_size;
     state.dict_ofs = (state.dict_ofs + (data_size)) & (TINFL_LZ_DICT_SIZE - 1);
-    data_size
+    if data_size != writeten {
+        return Err(Error::Msg("write size mismatch".to_string()));
+    }
+    Ok(writeten)
 }
 
 // #[cfg(all(test, feature = "with-alloc"))]

@@ -7,17 +7,14 @@
 use crate::deflate::CompressionLevel;
 use crate::deflate::core::{CompressorOxide, TDEFLFlush, TDEFLStatus, compress};
 use crate::error::Error;
-use crate::inflate::stream::ReadBytesFun;
 use crate::{DataFormat, MZError, MZFlush, MZStatus, StreamResult};
 use binrw::io::read::Read;
-use binrw::io::seek::Seek;
 use binrw::io::write::Write;
 
-pub fn compress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Send>(
+pub fn compress_stream_callback<'a, R: Read + Send + 'a, W: Write + Send>(
     mut input: R,
     writer: &'a mut W,
     compression_level: CompressionLevel,
-    callback_func: &'a mut ReadBytesFun<'a>,
 ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
     async move {
         let mut compressor = Box::<CompressorOxide>::default();
@@ -52,9 +49,6 @@ pub fn compress_stream_callback<'a, R: Read + Send + 'a, W: Write + Seek + Send>
                     if res.bytes_written > 0 {
                         let data = &data[..res.bytes_written];
                         writer.write_all(data).await?;
-                    }
-                    if res.bytes_consumed > 0 {
-                        callback_func(res.bytes_consumed as u64).await?;
                     }
                     if status == MZStatus::StreamEnd {
                         return Ok(());
