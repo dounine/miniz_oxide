@@ -5,6 +5,7 @@ use std::error::Error;
 pub mod core;
 mod output_buffer;
 pub mod stream;
+pub mod inflate_reader;
 use self::core::*;
 
 const TINFL_STATUS_FAILED_CANNOT_MAKE_PROGRESS: i32 = -4;
