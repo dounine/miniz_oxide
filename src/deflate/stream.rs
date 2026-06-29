@@ -12,7 +12,7 @@ use binrw::io::read::Read;
 use binrw::io::write::Write;
 
 pub fn compress_stream_callback<'a, R: Read + Send + 'a, W: Write + Send>(
-    mut input: R,
+    input: &'a mut R,
     writer: &'a mut W,
     compression_level: CompressionLevel,
 ) -> impl Future<Output = Result<(), Error>> + Send + 'a {

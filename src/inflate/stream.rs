@@ -8,12 +8,10 @@ use crate::error::Error;
 use crate::inflate::TINFLStatus;
 use crate::inflate::core::{DecompressorOxide, TINFL_LZ_DICT_SIZE, decompress, inflate_flags};
 use crate::{DataFormat, MZError, MZFlush, MZResult, MZStatus, StreamResult};
-use binrw::BinResult;
 use binrw::io::read::Read;
 use binrw::io::seek::Seek;
 use binrw::io::write::Write;
 use std::io::SeekFrom;
-use std::pin::Pin;
 
 /// Tag that determines reset policy of [InflateState](struct.InflateState.html)
 pub trait ResetPolicy {
@@ -165,10 +163,8 @@ impl InflateState {
         policy.reset(self)
     }
 }
-pub type ReadBytesFun<'a> =
-    dyn FnMut(u64) -> Pin<Box<dyn Future<Output = BinResult<()>> + Send>> + Send + 'a;
 pub fn decompress_stream<'a, R: Read + Send + 'a, W: Write + Seek + Send>(
-    mut input: R,
+    input: &'a mut R,
     writer: &'a mut W,
 ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
     async move {
