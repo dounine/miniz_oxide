@@ -1,10 +1,10 @@
+use crate::error::Error;
+use crate::inflate::stream::{InflateState, inflate};
+use crate::{DataFormat, MZFlush};
 use binrw::io::Read;
 use binrw::io::Seek;
 use binrw::io::Write;
 use std::io::SeekFrom;
-use crate::error::Error;
-use crate::inflate::stream::{InflateState, inflate};
-use crate::{DataFormat, MZFlush};
 
 ///  InflateReader 操作模式
 enum ReaderMode {
@@ -157,7 +157,8 @@ impl<R: Read + Send> InflateReader<R> {
             &test_input,
             &mut test_writer,
             MZFlush::None,
-        ).await;
+        )
+        .await;
 
         match result {
             Ok(stream_result) => {
@@ -193,7 +194,8 @@ impl<R: Read + Send> InflateReader<R> {
                     data,
                     &mut writer,
                     MZFlush::None,
-                ).await?;
+                )
+                .await?;
 
                 self.peek_pos += status.bytes_consumed;
 
@@ -229,7 +231,8 @@ impl<R: Read + Send> InflateReader<R> {
                         &[],
                         &mut writer,
                         MZFlush::Finish,
-                    ).await?;
+                    )
+                    .await?;
                     return match status.status {
                         Ok(_) => Ok(true),
                         Err(_) => Err(Error::Msg("Decompression error".to_string())),
@@ -243,7 +246,8 @@ impl<R: Read + Send> InflateReader<R> {
                 &self.input_buffer[self.input_offset..self.input_end],
                 &mut writer,
                 MZFlush::None,
-            ).await?;
+            )
+            .await?;
 
             self.input_offset += status.bytes_consumed;
 
@@ -277,8 +281,9 @@ impl<R: Read + Send> Read for InflateReader<R> {
                 match self.mode {
                     ReaderMode::Detecting => {
                         // 尝试检测
-                        let is_compressed = self.try_detect().await
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                        let is_compressed = self.try_detect().await.map_err(|e| {
+                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                        })?;
 
                         if is_compressed {
                             self.mode = ReaderMode::Decompressing;
@@ -292,14 +297,17 @@ impl<R: Read + Send> Read for InflateReader<R> {
                         let available = self.buffer.len() - self.buffer_pos;
                         if available > 0 {
                             let to_copy = available.min(buf.len());
-                            buf[..to_copy].copy_from_slice(&self.buffer[self.buffer_pos..self.buffer_pos + to_copy]);
+                            buf[..to_copy].copy_from_slice(
+                                &self.buffer[self.buffer_pos..self.buffer_pos + to_copy],
+                            );
                             self.buffer_pos += to_copy;
                             return Ok(to_copy);
                         }
 
                         // 按需解压更多数据
-                        let decompressed = self.decompress_more().await
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                        let decompressed = self.decompress_more().await.map_err(|e| {
+                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                        })?;
 
                         if !decompressed {
                             return Ok(0);
@@ -309,7 +317,9 @@ impl<R: Read + Send> Read for InflateReader<R> {
                         let available = self.buffer.len() - self.buffer_pos;
                         let to_copy = available.min(buf.len());
                         if to_copy > 0 {
-                            buf[..to_copy].copy_from_slice(&self.buffer[self.buffer_pos..self.buffer_pos + to_copy]);
+                            buf[..to_copy].copy_from_slice(
+                                &self.buffer[self.buffer_pos..self.buffer_pos + to_copy],
+                            );
                             self.buffer_pos += to_copy;
                         }
                         return Ok(to_copy);
@@ -319,7 +329,9 @@ impl<R: Read + Send> Read for InflateReader<R> {
                         if self.peek_pos < self.peek_buffer.len() {
                             let available = self.peek_buffer.len() - self.peek_pos;
                             let to_copy = available.min(buf.len());
-                            buf[..to_copy].copy_from_slice(&self.peek_buffer[self.peek_pos..self.peek_pos + to_copy]);
+                            buf[..to_copy].copy_from_slice(
+                                &self.peek_buffer[self.peek_pos..self.peek_pos + to_copy],
+                            );
                             self.peek_pos += to_copy;
                             // 如果读完了 peek_buffer，就清理掉释放内存
                             if self.peek_pos == self.peek_buffer.len() {
@@ -344,9 +356,7 @@ impl<R: Read + Send> Read for InflateReader<R> {
                     // 直通模式直接透传 flush
                     self.inner.flush().await
                 }
-                _ => {
-                    Ok(())
-                }
+                _ => Ok(()),
             }
         }
     }
@@ -359,8 +369,9 @@ impl<R: Seek + Read + Send> Seek for InflateReader<R> {
                 match self.mode {
                     ReaderMode::Detecting => {
                         // 先检测
-                        let is_compressed = self.try_detect().await
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                        let is_compressed = self.try_detect().await.map_err(|e| {
+                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                        })?;
                         if is_compressed {
                             self.mode = ReaderMode::Decompressing;
                         } else {
@@ -377,8 +388,9 @@ impl<R: Seek + Read + Send> Seek for InflateReader<R> {
 
                         // 如果目标位置超过已解压数据，尝试解压更多数据
                         while new_pos > self.buffer.len() {
-                            let decompressed = self.decompress_more().await
-                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                            let decompressed = self.decompress_more().await.map_err(|e| {
+                                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                            })?;
                             if !decompressed {
                                 break;
                             }
@@ -429,17 +441,13 @@ impl<'a> Write for BufferWriter<'a> {
     }
 
     fn flush(&mut self) -> impl Future<Output = std::io::Result<()>> + Send {
-        async move {
-            Ok(())
-        }
+        async move { Ok(()) }
     }
 }
 
 impl<'a> Seek for BufferWriter<'a> {
     fn seek(&mut self, _pos: SeekFrom) -> impl Future<Output = std::io::Result<u64>> + Send {
-        async move {
-            Ok(self.buffer.len() as u64)
-        }
+        async move { Ok(self.buffer.len() as u64) }
     }
 }
 
@@ -457,17 +465,13 @@ impl Write for VecWriter {
     }
 
     fn flush(&mut self) -> impl Future<Output = std::io::Result<()>> + Send {
-        async move {
-            Ok(())
-        }
+        async move { Ok(()) }
     }
 }
 
 impl Seek for VecWriter {
     fn seek(&mut self, _pos: SeekFrom) -> impl Future<Output = std::io::Result<u64>> + Send {
-        async move {
-            Ok(self.buf.len() as u64)
-        }
+        async move { Ok(self.buf.len() as u64) }
     }
 }
 
@@ -514,6 +518,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_set_position() {
+        let test_data = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let compressed = compress_to_vec(test_data, 6);
+
+        let cursor = Cursor::new(compressed);
+        let mut reader = InflateReader::new(cursor);
+
+        reader.seek(SeekFrom::Start(10)).await.unwrap();
+        let mut buffer2 = [0; 6];
+        reader.read(&mut buffer2).await.unwrap();
+        assert_eq!(&buffer2, b"ABCDEF");
+    }
+
+    #[tokio::test]
     async fn test_seek() {
         let test_data = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
         let compressed = compress_to_vec(test_data, 6);
@@ -545,6 +563,8 @@ mod tests {
         reader.seek(SeekFrom::End(-10)).await.unwrap();
         reader.read(&mut buffer2).await.unwrap();
         assert_eq!(&buffer2, b"QRSTUV");
+
+        assert_eq!(&output, &test_data)
     }
 
     #[tokio::test]

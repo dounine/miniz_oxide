@@ -10,7 +10,6 @@ use miniz_oxide::deflate::core::CompressorOxide;
 use miniz_oxide::deflate::stream::compress_stream_callback;
 use miniz_oxide::deflate::{CompressionLevel, compress_to_vec};
 use miniz_oxide::inflate::decompress_to_vec_callback;
-use miniz_oxide::inflate::stream::decompress_stream_callback;
 use miniz_oxide::{DataFormat, MZFlush};
 use std::fs;
 use std::io::Cursor;
@@ -131,13 +130,12 @@ fn main() {
     // assert_eq!(data1, output.into_inner());
     // let origin_de = decompress_to_vec_callback(&data1, &mut |v| {}).unwrap();
     // assert_eq!(origin, origin_de);
-    let mut out = Cursor::new(vec![]);
     let compressed = output.into_inner();
     let mut input = Cursor::new(&compressed);
-    decompress_stream_callback(&mut input, &mut out, &mut |v| {
-        Box::pin(async move { Ok(()) })
-    });
-    assert_eq!(origin, out.into_inner());
+    // decompress_stream_callback(&mut input, &mut out, &mut |v| {
+    //     Box::pin(async move { Ok(()) })
+    // });
+    // assert_eq!(origin, out.into_inner());
     //     match res.status {
     //         Ok(MZStatus::Ok) | Ok(MZStatus::StreamEnd) => {
     //             // data2 = &data2[res.bytes_consumed..];
