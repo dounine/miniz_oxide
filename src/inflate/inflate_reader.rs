@@ -18,16 +18,20 @@ pub enum ReaderMode {
 }
 
 /// 1. 按需解压数据
-/// 2. 已解压的数据保存在内部缓冲区中，支持随机访问已解压数据
+/// 2. 已解压的数据保存在内部缓冲区中，支持随机访问已解压数据（可通过 [`Self::allow_backward_read`] 关闭）
 /// 3. 自动检测：如果数据是压缩的则解压，否则直接读取
 pub struct InflateReader<R> {
     inner: R,
     mode: ReaderMode,
+    /// 为 `false` 时不缓存已解压数据，仅支持顺序向前读取，内存占用更低
+    allow_backward_read: bool,
     // 解压模式需要的字段
     decomp_state: Option<Box<InflateState>>,
-    // 内部缓冲区（仅解压模式使用）
+    // 内部缓冲区（仅解压模式且 allow_backward_read 时使用）
     buffer: Vec<u8>,
     buffer_pos: usize,
+    /// 顺序模式下已输出的解压字节数（用于 forward seek）
+    stream_pos: u64,
     // 输入缓冲（仅解压模式使用）
     input_buffer: Vec<u8>,
     input_offset: usize,
@@ -39,55 +43,59 @@ pub struct InflateReader<R> {
 }
 
 impl<R> InflateReader<R> {
-    /// 创建新的 InflateReader（自动检测模式）
-    pub fn new(inner: R) -> Self {
+    fn new_with_mode(inner: R, mode: ReaderMode, decomp_state: Option<Box<InflateState>>) -> Self {
+        let input_buffer = if mode == ReaderMode::PassThrough {
+            Vec::new()
+        } else {
+            vec![0; 32 * 1024]
+        };
         Self {
             inner,
-            mode: ReaderMode::Detecting,
-            decomp_state: Some(InflateState::new_boxed(DataFormat::Raw)),
+            mode,
+            allow_backward_read: true,
+            decomp_state,
             buffer: Vec::new(),
             buffer_pos: 0,
-            input_buffer: vec![0; 32 * 1024],
+            stream_pos: 0,
+            input_buffer,
             input_offset: 0,
             input_end: 0,
             is_eof: false,
             peek_buffer: Vec::new(),
             peek_pos: 0,
         }
+    }
+
+    /// 创建新的 InflateReader（自动检测模式）
+    pub fn new(inner: R) -> Self {
+        Self::new_with_mode(
+            inner,
+            ReaderMode::Detecting,
+            Some(InflateState::new_boxed(DataFormat::Raw)),
+        )
     }
 
     /// 创建新的 InflateReader，强制使用解压模式
     pub fn new_decompress(inner: R) -> Self {
-        Self {
+        Self::new_with_mode(
             inner,
-            mode: ReaderMode::Decompressing,
-            decomp_state: Some(InflateState::new_boxed(DataFormat::Raw)),
-            buffer: Vec::new(),
-            buffer_pos: 0,
-            input_buffer: vec![0; 32 * 1024],
-            input_offset: 0,
-            input_end: 0,
-            is_eof: false,
-            peek_buffer: Vec::new(),
-            peek_pos: 0,
-        }
+            ReaderMode::Decompressing,
+            Some(InflateState::new_boxed(DataFormat::Raw)),
+        )
     }
 
     /// 创建新的 InflateReader，强制使用直通模式
     pub fn new_passthrough(inner: R) -> Self {
-        Self {
-            inner,
-            mode: ReaderMode::PassThrough,
-            decomp_state: None,
-            buffer: Vec::new(),
-            buffer_pos: 0,
-            input_buffer: Vec::new(), // 直通模式不需要预分配
-            input_offset: 0,
-            input_end: 0,
-            is_eof: false,
-            peek_buffer: Vec::new(),
-            peek_pos: 0,
-        }
+        Self::new_with_mode(inner, ReaderMode::PassThrough, None)
+    }
+
+    /// 设置是否允许后退读取。
+    ///
+    /// - `true`（默认）：缓存已解压数据，支持 [`Seek`] 与随机访问 API。
+    /// - `false`：不缓存已解压数据，仅顺序向前读取，内存占用更低。
+    pub fn allow_backward_read(mut self, allow: bool) -> Self {
+        self.allow_backward_read = allow;
+        self
     }
 
     /// 消费 InflateReader，返回内部 reader
@@ -103,33 +111,52 @@ impl<R> InflateReader<R> {
         &mut self.inner
     }
 
-    /// 获取已解压数据的长度（仅解压模式有效）
+    /// 是否允许后退读取
+    pub fn allows_backward_read(&self) -> bool {
+        self.allow_backward_read
+    }
+
+    /// 获取已解压数据的长度（仅解压模式且允许后退读取时有效）
     pub fn decompressed_len(&self) -> usize {
-        self.buffer.len()
+        if self.allow_backward_read {
+            self.buffer.len()
+        } else {
+            self.stream_pos as usize
+        }
     }
 
-    /// 随机访问已解压数据（仅解压模式有效）
+    /// 随机访问已解压数据（仅解压模式且允许后退读取时有效）
     pub fn get(&self, index: usize) -> Option<&u8> {
-        self.buffer.get(index)
+        if self.allow_backward_read {
+            self.buffer.get(index)
+        } else {
+            None
+        }
     }
 
-    /// 获取已解压数据的切片（仅解压模式有效）
+    /// 获取已解压数据的切片（仅解压模式且允许后退读取时有效）
     pub fn get_slice(&self, start: usize, end: usize) -> Option<&[u8]> {
-        if start <= end && end <= self.buffer.len() {
+        if self.allow_backward_read && start <= end && end <= self.buffer.len() {
             Some(&self.buffer[start..end])
         } else {
             None
         }
     }
 
-    /// 获取所有已解压数据（仅解压模式有效）
+    /// 获取所有已解压数据（仅解压模式且允许后退读取时有效）
     pub fn get_all(&self) -> &[u8] {
-        &self.buffer
+        if self.allow_backward_read {
+            &self.buffer
+        } else {
+            &[]
+        }
     }
 
-    /// 重置 buffer 位置到开头（仅解压模式有效）
+    /// 重置 buffer 位置到开头（仅解压模式且允许后退读取时有效）
     pub fn reset_position(&mut self) {
-        self.buffer_pos = 0;
+        if self.allow_backward_read {
+            self.buffer_pos = 0;
+        }
     }
 
     /// 获取模式
@@ -183,7 +210,7 @@ impl<R: Read + Send> InflateReader<R> {
         Ok(false)
     }
 
-    /// 内部方法：按需解压更多数据到缓冲区（仅解压模式）
+    /// 内部方法：按需解压更多数据到缓冲区（仅解压模式且允许后退读取）
     async fn decompress_more(&mut self) -> Result<bool, Error> {
         if self.is_eof {
             return Ok(false);
@@ -278,6 +305,34 @@ impl<R: Read + Send> InflateReader<R> {
             }
         }
     }
+
+    /// 顺序模式下跳过指定字节数（用于向前 seek）
+    async fn skip_forward(&mut self, mut bytes: u64) -> Result<(), Error> {
+        let pending = self.buffer.len().saturating_sub(self.buffer_pos);
+        if pending > 0 {
+            let skip = pending.min(bytes as usize);
+            self.buffer_pos += skip;
+            self.stream_pos += skip as u64;
+            bytes -= skip as u64;
+            if self.buffer_pos == self.buffer.len() {
+                self.buffer.clear();
+                self.buffer_pos = 0;
+            }
+        }
+
+        while bytes > 0 {
+            self.buffer.clear();
+            self.buffer_pos = 0;
+            if !self.decompress_more().await? {
+                return Err(Error::Msg("Seek beyond decompressed data".to_string()));
+            }
+            let available = self.buffer.len();
+            let skip = available.min(bytes as usize);
+            self.stream_pos += skip as u64;
+            bytes -= skip as u64;
+        }
+        Ok(())
+    }
 }
 
 impl<R: Read + Send> Read for InflateReader<R> {
@@ -307,6 +362,13 @@ impl<R: Read + Send> Read for InflateReader<R> {
                                 &self.buffer[self.buffer_pos..self.buffer_pos + to_copy],
                             );
                             self.buffer_pos += to_copy;
+                            if !self.allow_backward_read {
+                                self.stream_pos += to_copy as u64;
+                                if self.buffer_pos == self.buffer.len() {
+                                    self.buffer.clear();
+                                    self.buffer_pos = 0;
+                                }
+                            }
                             return Ok(to_copy);
                         }
 
@@ -327,6 +389,13 @@ impl<R: Read + Send> Read for InflateReader<R> {
                                 &self.buffer[self.buffer_pos..self.buffer_pos + to_copy],
                             );
                             self.buffer_pos += to_copy;
+                            if !self.allow_backward_read {
+                                self.stream_pos += to_copy as u64;
+                                if self.buffer_pos == self.buffer.len() {
+                                    self.buffer.clear();
+                                    self.buffer_pos = 0;
+                                }
+                            }
                         }
                         return Ok(to_copy);
                     }
@@ -386,31 +455,73 @@ impl<R: Seek + Read + Send> Seek for InflateReader<R> {
                         // 继续循环
                     }
                     ReaderMode::Decompressing => {
-                        let new_pos = match pos {
-                            SeekFrom::Start(offset) => offset as usize,
-                            SeekFrom::End(offset) => (self.buffer.len() as i64 + offset) as usize,
-                            SeekFrom::Current(offset) => (self.buffer_pos as i64 + offset) as usize,
-                        };
+                        if self.allow_backward_read {
+                            let new_pos = match pos {
+                                SeekFrom::Start(offset) => offset as usize,
+                                SeekFrom::End(offset) => {
+                                    (self.buffer.len() as i64 + offset) as usize
+                                }
+                                SeekFrom::Current(offset) => {
+                                    (self.buffer_pos as i64 + offset) as usize
+                                }
+                            };
 
-                        // 如果目标位置超过已解压数据，尝试解压更多数据
-                        while new_pos > self.buffer.len() {
-                            let decompressed = self.decompress_more().await.map_err(|e| {
-                                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-                            })?;
-                            if !decompressed {
-                                break;
+                            // 如果目标位置超过已解压数据，尝试解压更多数据
+                            while new_pos > self.buffer.len() {
+                                let decompressed = self.decompress_more().await.map_err(|e| {
+                                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                                })?;
+                                if !decompressed {
+                                    break;
+                                }
                             }
+
+                            if new_pos > self.buffer.len() {
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidInput,
+                                    "Seek beyond decompressed data",
+                                ));
+                            }
+
+                            self.buffer_pos = new_pos;
+                            return Ok(new_pos as u64);
                         }
 
-                        if new_pos > self.buffer.len() {
+                        let new_pos = match pos {
+                            SeekFrom::Start(offset) => offset,
+                            SeekFrom::Current(offset) => {
+                                if offset < 0 {
+                                    return Err(std::io::Error::new(
+                                        std::io::ErrorKind::Unsupported,
+                                        "Backward seek is not supported without cache",
+                                    ));
+                                }
+                                self.stream_pos.saturating_add(offset as u64)
+                            }
+                            SeekFrom::End(_) => {
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::Unsupported,
+                                    "SeekFrom::End is not supported without cache",
+                                ));
+                            }
+                        };
+
+                        if new_pos < self.stream_pos {
                             return Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidInput,
-                                "Seek beyond decompressed data",
+                                std::io::ErrorKind::Unsupported,
+                                "Backward seek is not supported without cache",
                             ));
                         }
 
-                        self.buffer_pos = new_pos;
-                        return Ok(new_pos as u64);
+                        if new_pos > self.stream_pos {
+                            self.skip_forward(new_pos - self.stream_pos)
+                                .await
+                                .map_err(|e| {
+                                    std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string())
+                                })?;
+                        }
+
+                        return Ok(new_pos);
                     }
                     ReaderMode::PassThrough => {
                         // 直通模式直接透传给 inner
@@ -632,5 +743,36 @@ mod tests {
             output.extend_from_slice(&buffer[..n]);
         }
         assert_eq!(output, test_data);
+    }
+
+    #[tokio::test]
+    async fn test_forward_only() {
+        let test_data = b"Hello, forward-only mode without cache!";
+        let compressed = compress_to_vec(test_data, 6);
+
+        let cursor = Cursor::new(compressed);
+        let mut reader = InflateReader::new(cursor).allow_backward_read(false);
+        assert!(!reader.allows_backward_read());
+
+        let mut output = Vec::new();
+        let mut buffer = [0; 8];
+        loop {
+            let n = reader.read(&mut buffer).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            output.extend_from_slice(&buffer[..n]);
+        }
+        assert_eq!(output, test_data);
+        assert!(reader.buffer.is_empty());
+        assert_eq!(reader.decompressed_len(), test_data.len());
+        assert_eq!(reader.get(0), None);
+        assert_eq!(reader.get_all(), &[] as &[u8]);
+
+        let err = reader
+            .seek(SeekFrom::Start(0))
+            .await
+            .expect_err("backward seek should fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     }
 }
