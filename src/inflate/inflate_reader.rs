@@ -7,7 +7,8 @@ use binrw::io::Write;
 use std::io::SeekFrom;
 
 ///  InflateReader 操作模式
-enum ReaderMode {
+#[derive(PartialEq, Eq)]
+pub enum ReaderMode {
     /// 检测中
     Detecting,
     /// 解压模式
@@ -129,6 +130,11 @@ impl<R> InflateReader<R> {
     /// 重置 buffer 位置到开头（仅解压模式有效）
     pub fn reset_position(&mut self) {
         self.buffer_pos = 0;
+    }
+
+    /// 获取模式
+    pub fn model(&self) -> &ReaderMode {
+        &self.mode
     }
 }
 
